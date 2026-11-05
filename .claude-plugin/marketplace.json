@@ -1,0 +1,15 @@
+{
+  "name": "tinta",
+  "description": "Tinta – Code Themes",
+  "owner": {
+    "name": "Gabriele Chesi"
+  },
+  "plugins": [
+    {
+      "name": "tinta",
+      "source": "./tinta",
+      "description": "Motore dei temi Tinta per il tab Code / Tinta theme engine for the Code tab",
+      "version": "0.3.96"
+    }
+  ]
+}

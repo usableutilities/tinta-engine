@@ -146,6 +146,13 @@ declare module 'claude-code' {
       plan: { id: string; status: string }[]
       /** The running turn's tool calls and the files they wrote, for its closing line (experiment turnFooter). */
       turnStats: { tools: number; files: string[] }
+      /**
+       * Whether the session waits for the person: a permission dialog or a question open. Apart from \`phase\`, so
+       * the spinner (animated) reads only this and redraws only when a dialog opens or closes.
+       */
+      waiting: boolean
+      /** The main turn's last phase: working while it runs, done or failed once it ended, idle before any or after a stop. */
+      phase: 'idle' | 'working' | 'done' | 'failed'
     }
   }
 }

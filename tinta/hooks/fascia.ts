@@ -142,3 +142,52 @@ export const bandTimerDrawing = (text: string | undefined, muted: string): Drawi
     height: H,
   }
 }
+
+/** The session's state, one signal everywhere: Claude works, waits for the person, is done, or stopped on an error. */
+export type SessionState = 'working' | 'waiting' | 'done' | 'failed'
+
+/**
+ * The state's mark, still in every state (it reads with Reduce Motion and
+ * with the theme's motion off): working a ring round a dot, waiting a pause
+ * sign on a soft disc, done a tick in a ring, failed a cross in a ring.
+ * Shape and colour both change, so the state never rests on colour alone.
+ */
+export const statusMarkDrawing = (state: SessionState, ink: string, size = 14): Drawing => {
+  const c = size / 2
+  const r = c - 1
+  const sw = r1(Math.max(1.4, size / 9))
+  const ring = `<circle cx="${c}" cy="${c}" r="${r1(r - sw / 2)}" fill="none" stroke="${ink}" stroke-width="${sw}"/>`
+  const u = size / 14
+  const body =
+    state === 'working'
+      ? `${ring}<circle cx="${c}" cy="${c}" r="${r1(2.6 * u)}" fill="${ink}"/>`
+      : state === 'waiting'
+        ? `<circle cx="${c}" cy="${c}" r="${r1(r)}" fill="${ink}" fill-opacity="0.22"/>${ring}<rect x="${r1(c - 2.6 * u)}" y="${r1(c - 3 * u)}" width="${r1(1.8 * u)}" height="${r1(6 * u)}" rx="${r1(0.6 * u)}" fill="${ink}"/><rect x="${r1(c + 0.8 * u)}" y="${r1(c - 3 * u)}" width="${r1(1.8 * u)}" height="${r1(6 * u)}" rx="${r1(0.6 * u)}" fill="${ink}"/>`
+        : state === 'done'
+          ? `${ring}<path d="M${r1(c - 3 * u)} ${r1(c + 0.2 * u)} L${r1(c - 0.8 * u)} ${r1(c + 2.4 * u)} L${r1(c + 3.2 * u)} ${r1(c - 2.2 * u)}" fill="none" stroke="${ink}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`
+          : `${ring}<path d="M${r1(c - 2.4 * u)} ${r1(c - 2.4 * u)} L${r1(c + 2.4 * u)} ${r1(c + 2.4 * u)} M${r1(c + 2.4 * u)} ${r1(c - 2.4 * u)} L${r1(c - 2.4 * u)} ${r1(c + 2.4 * u)}" fill="none" stroke="${ink}" stroke-width="${sw}" stroke-linecap="round"/>`
+
+  return { source: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${body}</svg>`, width: size, height: size }
+}
+
+/**
+ * The band's state: its mark and its word in the state's colour, in a slot as
+ * wide as the longest of `words` (every state's word in this language), so
+ * the band never shifts as the state changes. Still: nothing in it moves.
+ */
+export const bandStatusDrawing = (state: SessionState, word: string, ink: string, words: readonly string[]): Drawing => {
+  const mark = statusMarkDrawing(state, ink, 14)
+  const nested = mark.source.replace('<svg xmlns="http://www.w3.org/2000/svg"', `<svg x="0" y="${r1((H - mark.height) / 2)}"`)
+  const x = mark.width + 6
+  const slot = Math.max(...[word, ...words].map(one => Math.ceil(bandPx(one) * 1.06)))
+  const width = x + slot + 2
+
+  return {
+    source: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}">${nested}<text x="${x}" y="${BASE}" font-family="${escapeXml(FONT)}" font-size="${BAND_FONT_PX}" font-weight="600" fill="${ink}">${escapeXml(word)}</text></svg>`,
+    width,
+    height: H,
+  }
+}
+
+/** The state's glyph where only text is drawn (the terminal's band): the same four shapes. */
+export const STATUS_GLYPHS: { [state in SessionState]: string } = { working: '◉', waiting: '⏸', done: '✓', failed: '✕' }

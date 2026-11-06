@@ -1,4 +1,6 @@
-import { APP_FONT } from './reply'
+import { APP_FONT, diffFromInput, diffText } from './reply'
+import { t } from './i18n'
+import type { StringKey } from './i18n'
 import { APP_BACKGROUND, APP_TEXT, contrast, mix } from './theme'
 import type { Drawing } from './svg'
 import { CHIP, escapeXml, measure } from './svg'
@@ -203,47 +205,88 @@ export const footerText = (ms: number, stats: TurnStats, words: { tools: (n: num
 
 // ── (g) a line under the permission dialog ──────────────────────────────────
 
-/** What a Bash command risks, by pattern, highest first: [level, Italian, English]. */
-const BASH_RISKS: readonly [RegExp, 'high' | 'note', string, string][] = [
-  [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)*-?[a-zA-Z]*f|\brm\s+-[a-zA-Z]*[rR]/, 'high', 'cancella file in modo ricorsivo', 'deletes files recursively'],
-  [/\bsudo\b/, 'high', 'chiede privilegi di amministratore', 'asks for administrator rights'],
-  [/\bgit\s+push\b[^\n]*(--force\b|\s-f\b|--force-with-lease)/, 'high', 'riscrive la storia remota', 'rewrites remote history'],
-  [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--\s|restore\s)/, 'high', 'scarta modifiche locali', 'discards local changes'],
-  [/\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b/, 'high', 'esegue uno script scaricato', 'runs a downloaded script'],
-  [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b/, 'high', 'pubblica un pacchetto', 'publishes a package'],
-  [/\bgit\s+push\b/, 'note', 'invia commit al remoto', 'pushes commits to the remote'],
-  [/\b(npm|pnpm|yarn|pip3?|brew)\s+(install|add|i)\b/, 'note', 'installa dipendenze', 'installs dependencies'],
-  [/\bchmod\b|\bchown\b/, 'note', 'cambia permessi di file', 'changes file permissions'],
+/** A permission's risk: high (hard to undo, outside the project), medium (changes beyond a file), low (a file, a page). */
+export type RiskLevel = 'high' | 'medium' | 'low'
+
+/** What a Bash command risks, by pattern, highest first: its level and the words that say why. */
+const BASH_RISKS: readonly [RegExp, RiskLevel, StringKey][] = [
+  [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)*-?[a-zA-Z]*f|\brm\s+-[a-zA-Z]*[rR]/, 'high', 'riskRmRecursive'],
+  [/\bsudo\b/, 'high', 'riskSudo'],
+  [/\bgit\s+push\b[^\n]*(--force\b|\s-f\b|--force-with-lease)/, 'high', 'riskForcePush'],
+  [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--\s|restore\s)/, 'high', 'riskDiscard'],
+  [/\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b/, 'high', 'riskPipeShell'],
+  [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b/, 'high', 'riskPublish'],
+  [/\bgit\s+push\b/, 'medium', 'riskPush'],
+  [/\b(npm|pnpm|yarn|pip3?|brew)\s+(install|add|i)\b/, 'medium', 'riskInstall'],
+  [/\bchmod\b|\bchown\b/, 'medium', 'riskChmod'],
 ]
 
-/**
- * The risk line for a call asking permission: a Bash command's riskiest
- * pattern, the file an edit touches, the host a fetch opens; undefined
- * when there is nothing worth a line.
- */
-export const riskTagline = (tool: string, input: unknown, lang: string): string | undefined => {
-  const it = lang === 'it'
-  const args = typeof input === 'object' && input !== null ? (input as { [key: string]: unknown }) : {}
-  if (tool === 'Bash' && typeof args.command === 'string') {
-    const hit = BASH_RISKS.find(([pattern]) => pattern.test(args.command as string))
-    if (hit === undefined) return undefined
-    const [, level, itText, enText] = hit
+/** A command that only looks (lists, reads, searches, git's read-only verbs), alone: no chain, pipe, redirect or substitution. */
+const BASH_LOOKS = /^\s*(ls|cat|head|tail|wc|pwd|echo|grep|rg|which|file|stat|du|df|tree|git\s+(status|log|diff|show|branch))\b/
+const BASH_CHAINS = /[;&|>`]|\$\(/
 
-    return `${level === 'high' ? (it ? '⚠ rischio alto: ' : '⚠ high risk: ') : 'ℹ '}${it ? itText : enText}`
+/** Files whose change reaches past the project: secrets, keys, shell start-up, git's own, system and Claude settings. */
+const SENSITIVE_PATH = /(^|[\\/])\.(env|ssh|aws|gnupg|netrc|npmrc|zshrc|bashrc|bash_profile|profile|zprofile)([\\/.]|$)|(^|[\\/])\.git[\\/]|^\/(etc|usr|System|Library)\/|[\\/]\.claude[\\/]settings/
+
+/** The level's mark: the same three in every theme, read before the words. */
+export const RISK_MARKS: { [level in RiskLevel]: string } = { high: '⚠', medium: '◆', low: '○' }
+
+/** The longest a risk line runs: one line under the dialog. */
+const RISK_LINE_MAX = 110
+
+/** A command as one short line: its first line, spaces folded, cut with an ellipsis. */
+const shortCommand = (command: string, max = 60): string => {
+  const line = (command.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim()
+
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+
+/** The risk of a call asking permission and what it does, or undefined when there is nothing readable to say. */
+export const riskOf = (tool: string, input: unknown, lang: string): { level: RiskLevel; what: string } | undefined => {
+  const args = typeof input === 'object' && input !== null ? (input as { [key: string]: unknown }) : {}
+  if (tool === 'Bash' && typeof args.command === 'string' && args.command.trim() !== '') {
+    const command = args.command
+    const hit = BASH_RISKS.find(([pattern]) => pattern.test(command))
+    if (hit !== undefined) return { level: hit[1], what: `${t(lang, hit[2])} · ${shortCommand(command)}` }
+    const looks = BASH_LOOKS.test(command) && !BASH_CHAINS.test(command) && !command.includes('\n')
+
+    return { level: looks ? 'low' : 'medium', what: `${t(lang, 'riskRuns')} ${shortCommand(command)}` }
   }
   const path = writtenFile(tool, input)
   if (path !== undefined) {
     const name = path.split(/[\\/]/).pop() ?? path
+    const stat = tool === 'NotebookEdit' ? undefined : diffFromInput(tool, '', input)
+    const counts = stat === undefined ? '' : tool === 'Write' ? ` (+${stat.added})` : ` (${diffText(stat)})`
+    const verb = t(lang, tool === 'Write' ? 'riskWrites' : 'riskEdits')
+    if (SENSITIVE_PATH.test(path)) return { level: 'high', what: `${verb} ${name}${counts} · ${t(lang, 'riskSensitive')}` }
 
-    return `✎ ${tool === 'Write' ? (it ? 'scrive' : 'writes') : it ? 'modifica' : 'edits'} ${name}`
+    return { level: 'low', what: `${verb} ${name}${counts}` }
   }
   if (tool === 'WebFetch' && typeof args.url === 'string') {
     const host = /^https?:\/\/([^/?#]+)/i.exec(args.url)?.[1]
 
-    return host === undefined ? undefined : `↗ ${it ? 'apre' : 'opens'} ${host}`
+    return host === undefined ? undefined : { level: 'low', what: `${t(lang, 'riskOpens')} ${host}` }
   }
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool)
+  if (mcp !== null) return { level: 'medium', what: `${t(lang, 'riskMcp')} ${mcp[1]} · ${mcp[2]}` }
 
   return undefined
+}
+
+/**
+ * The risk line under the permission dialog: the level's mark and word, then
+ * what the call does (the command, the file with its +N −M, the host, the
+ * external tool), e.g. "⚠ rischio alto · cancella file in modo ricorsivo ·
+ * rm -rf build"; undefined when there is nothing readable to say. Plain text:
+ * the dialog is the app's, so the theme cannot colour it, the mark carries the level.
+ */
+export const riskTagline = (tool: string, input: unknown, lang: string): string | undefined => {
+  const risk = riskOf(tool, input, lang)
+  if (risk === undefined) return undefined
+  const key = risk.level === 'high' ? 'riskHigh' : risk.level === 'medium' ? 'riskMedium' : 'riskLow'
+  const line = `${RISK_MARKS[risk.level]} ${t(lang, key)} · ${risk.what}`
+
+  return line.length > RISK_LINE_MAX ? `${line.slice(0, RISK_LINE_MAX - 1)}…` : line
 }
 
 /** When to try the line after the check said "ask": the dialog opens a moment later, and a call not open is refused. */

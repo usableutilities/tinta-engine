@@ -15,7 +15,8 @@ import { isOwnBackdrop, pagePlan } from './fx-page'
 import { decodeOverlay, isPlainProse } from './decodifica'
 import { enforcement, isSealed, machineId, onWindows, openTheme, sealHome, sealHomeFrom, secretFrom } from './sigillo'
 import type { SealContext } from './sigillo'
-import { bandHealthDrawing, bandTimerDrawing, bandWhoDrawing, clockText } from './fascia'
+import { STATUS_GLYPHS, bandHealthDrawing, bandStatusDrawing, bandTimerDrawing, bandWhoDrawing, clockText, statusMarkDrawing } from './fascia'
+import type { SessionState } from './fascia'
 import { HEADING_EFFECTS, headingDrawing as fxHeading } from './fx-headings'
 import { overlayAlpha, UNICORNO_CYCLE, UNICORNO_LOOK, candyAlpha, cycleSetAt, safeMeshStrength, CLAUDE_COOL, NOTICE_TRIES_MS, SPINNER_MODES, TASK_END_ICONS, footerText, riskTagline, tokensText, writtenFile, checkboxDrawing, cleanTaskText, durationText, newlyDone, pillDrawing, planAfter, planCount, ringDrawing, taskEnd, todosOf } from './esperimenti'
 import type { PlanItem, TurnStats } from './esperimenti'
@@ -50,6 +51,8 @@ const prefs = atom({ plugin: 'tinta', key: 'prefs' } as const, {})
 const pageDrawn = atom({ plugin: 'tinta', key: 'pageDrawn' } as const, null)
 const streamTick = atom({ plugin: 'tinta', key: 'streamTick' } as const, 0)
 const turnStats = atom({ plugin: 'tinta', key: 'turnStats' } as const, { tools: 0, files: [] })
+const waiting = atom({ plugin: 'tinta', key: 'waiting' } as const, false)
+const phase = atom({ plugin: 'tinta', key: 'phase' } as const, 'idle')
 
 /** The Attività pane. */
 export const ATTIVITA = 'tinta-attivita'
@@ -124,6 +127,67 @@ const ORDERS = new Map<string, number>()
 
 /** Whether a turn runs: the engine's own record, read by the rows without subscribing them to the turn's atoms. */
 let turnRunning = false
+
+// ── the session's state: working, waiting for you, done ────────────────────
+// One signal for the band and the spinner. A call the check put to the person is remembered by its id; once the
+// app's dialog for it opens (classic.PermissionRequest, no hook deciding) or a question is asked, the session waits
+// until that call runs, its result is stored, or the turn ends.
+
+/** Calls the check said "ask" for, not yet seen open: their id by tool and loop, oldest first. */
+const ASKED: { id: string; tool: string; agent: string }[] = []
+/** The dialogs open now: a call's id, or a stand-in when the dialog's call was never checked. */
+const OPEN_ASKS = new Set<string>()
+let askSerial = 0
+
+/** The waiting atom set to whether a dialog is open; written only when it changes, so its readers redraw only then. */
+const syncWaiting = async ($: Dollar) => {
+  const on = OPEN_ASKS.size > 0
+  if ((await read($, waiting)) !== on) await update($, waiting, () => on)
+}
+
+/** The phase atom set to `to`, written only when it changes. */
+const setPhase = async ($: Dollar, to: 'idle' | 'working' | 'done' | 'failed') => {
+  if ((await read($, phase)) !== to) await update($, phase, () => to)
+}
+
+/** Every ask forgotten: a turn's start or end closes whatever dialog was open. */
+const clearAsks = async ($: Dollar) => {
+  ASKED.length = 0
+  OPEN_ASKS.clear()
+  await syncWaiting($)
+}
+
+/** A call no longer waits: it runs, or its result (a refusal included) is stored. */
+const closeAsk = async ($: Dollar, id: string | undefined) => {
+  if (id === undefined) return
+  const at = ASKED.findIndex(one => one.id === id)
+  if (at >= 0) ASKED.splice(at, 1)
+  if (OPEN_ASKS.delete(id)) await syncWaiting($)
+}
+
+/** The tool_use ids of a stored row's tool results. */
+export const resultIds = (content: unknown): string[] =>
+  Array.isArray(content)
+    ? content.flatMap(block => (block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_result' && typeof (block as { tool_use_id?: unknown }).tool_use_id === 'string' ? [(block as { tool_use_id: string }).tool_use_id] : []))
+    : []
+
+/** Each state's word. */
+const STATE_WORDS = { working: 'statusWorking', waiting: 'statusWaiting', done: 'statusDone', failed: 'statusFailed' } as const
+
+/**
+ * Each state's colour, the theme's own: its accent while working, its warning while waiting (with none, its danger
+ * turned toward amber), its success, its danger; read on both app backgrounds on desktop.
+ */
+export const stateInkOf = (theme: Look, state: SessionState, surface: Surface): string => {
+  const danger = theme.palette.danger ?? '#E5484D'
+  const raw = state === 'working' ? theme.palette.accent ?? '#A970FF' : state === 'waiting' ? theme.palette.warning ?? mix(danger, '#E5B000', 0.55) : state === 'done' ? theme.palette.success ?? '#3FB950' : danger
+
+  return (surface === 'desktop' ? readableOnBoth(raw) : raw) ?? raw
+}
+
+/** The band's state from the host's working flag and the atoms: waiting wins, then working, then the last turn's end. */
+export const sessionState = (isWorking: boolean, isWaiting: boolean, last: 'idle' | 'working' | 'done' | 'failed'): 'working' | 'waiting' | 'done' | 'failed' | undefined =>
+  isWaiting ? 'waiting' : isWorking ? 'working' : last === 'done' || last === 'failed' ? last : undefined
 
 /** A row's "HH:MM" from the stored minutes by id; undefined when its storing was never seen. */
 export const timeFrom = (held: { [id: string]: number }, id: string | undefined): string | undefined => {
@@ -1934,6 +1998,15 @@ export const register: Register = on => {
       }
       const text = rowText(e.message as { content?: unknown })
       if (text.includes('<task-notification>')) await endNotified($, text)
+      // the state: a stored result (a refusal too) closes its call's dialog; the main loop's next reply closes a
+      // dialog whose call was never seen
+      if (OPEN_ASKS.size > 0) {
+        for (const id of resultIds((e.message as { content?: unknown }).content)) await closeAsk($, id)
+        if (e.door === 'response' && e.agentId === undefined) {
+          for (const id of [...OPEN_ASKS]) if (id.startsWith('ask-')) OPEN_ASKS.delete(id)
+          await syncWaiting($)
+        }
+      }
     } catch {
       // tracking never changes the row
     }
@@ -1960,8 +2033,22 @@ export const register: Register = on => {
   // sounds for moments no other hook sees
   on('classic.PermissionRequest', async ($, e, next) => {
     void sound($, 'permissionRequest').catch(() => undefined)
+    const result = await next(e)
+    // no hook decided: the app's dialog opens and the session waits for the person (the oldest call checked "ask"
+    // for this tool in this loop is the dialog's)
+    try {
+      if ((result as { decision?: unknown } | undefined)?.decision === undefined) {
+        const agent = e.agent_id ?? ''
+        const at = ASKED.findIndex(one => one.tool === e.tool_name && one.agent === agent)
+        const id = at >= 0 ? (ASKED.splice(at, 1)[0] as { id: string }).id : `ask-${++askSerial}`
+        OPEN_ASKS.add(id)
+        await syncWaiting($)
+      }
+    } catch {
+      // the state never changes the dialog
+    }
 
-    return next(e)
+    return result
   }).catch(($, e, next) => next(e))
 
   // experiment permissionNotice: a risk line under the permission dialog; a probe as well (the dialog opens after the
@@ -1970,7 +2057,14 @@ export const register: Register = on => {
     const verdict = await next(e)
     try {
       const id = e.tool_use_id
-      if (verdict.decision === 'ask' && id !== undefined && e.agentId === undefined && tries(await active($), 'permissionNotice')) {
+      // the state: remembered until its dialog opens (classic.PermissionRequest), runs or is answered
+      if (verdict.decision === 'ask' && id !== undefined) {
+        ASKED.push({ id, tool: e.tool, agent: e.agentId ?? '' })
+        if (ASKED.length > 50) ASKED.shift()
+      }
+      // on for every theme unless it says experiments.permissionNotice false
+      const drawn = await active($)
+      if (verdict.decision === 'ask' && id !== undefined && e.agentId === undefined && drawn !== null && drawn.experiments?.permissionNotice !== false) {
         const line = riskTagline(e.tool, e.input, await read($, locale))
         if (line !== undefined) {
           for (const ms of NOTICE_TRIES_MS) {
@@ -2019,7 +2113,18 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    const ran = await next(e)
+    // the state: a call that runs is no longer waiting on its dialog; a question waits for the person while it runs
+    const question = e.tool === 'AskUserQuestion' && e.tool_use_id !== undefined ? `question-${e.tool_use_id}` : undefined
+    try {
+      await closeAsk($, e.tool_use_id)
+      if (question !== undefined) {
+        OPEN_ASKS.add(question)
+        await syncWaiting($)
+      }
+    } catch {
+      // the state never changes the call
+    }
+    const ran = await next(e).finally(() => (question === undefined ? undefined : closeAsk($, question).catch(() => undefined)))
     if (ran.deny === undefined && ran.isError === true && e.agentId === undefined) void sound($, 'toolError').catch(() => undefined)
     // experiment turnFooter: the turn's calls and written files
     try {
@@ -2112,6 +2217,7 @@ export const register: Register = on => {
     await update($, workStart, held => held ?? at)
     await update($, now, () => at)
     turnRunning = true
+    await setPhase($, 'working').catch(() => undefined)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -2119,6 +2225,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     void sound($, 'turnStart').catch(() => undefined)
     turnRunning = true
+    if ((e as { agentId?: string }).agentId === undefined) await setPhase($, 'working').catch(() => undefined)
     if ((await read($, workStart)) === null) {
       const at = await $.clock.now().catch(() => 0)
       await update($, workStart, () => at)
@@ -2133,6 +2240,9 @@ export const register: Register = on => {
     const result = await next(e)
     if (e.agentId === undefined) {
       turnRunning = false
+      // the state: done after an answer, failed after an error or a refusal, nothing after a stop (the person knows)
+      await clearAsks($).catch(() => undefined)
+      await setPhase($, e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'idle' : 'failed').catch(() => undefined)
       await update($, workStart, () => null).catch(() => undefined)
       await refreshSession($).catch(() => undefined)
       if (e.reason !== 'aborted') void sound($, e.reason === 'answer' ? 'turnComplete' : 'error').catch(() => undefined)
@@ -2642,13 +2752,16 @@ export const register: Register = on => {
       const pending = e.props.isRunning && !e.props.isInterrupted ? await pendingFor($, theme, els) : undefined
       const body = await next(pending ? { ...e, props: withoutAppDots(e.props) } : e)
       const lang = await read($, locale)
-      // a finished Edit or Write: its diffstat beside the chip, the app's row untouched
-      const wantsStat = !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted && 'Svg' in els && theme !== null && featureOn(theme.activity?.diffstat, theme)
+      // a finished Edit or Write: its diffstat beside the chip, the app's row untouched; on in every theme unless
+      // activity.diffstat is false
+      const wantsStat = !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted && 'Svg' in els && theme !== null && theme.activity?.diffstat !== false
       const stat = wantsStat ? diffStatOf(e.props.tool, e.props.output, e.props.input) : undefined
       // a probe: what the desktop hands an Edit or Write row (the record, or the model's text)
       if (wantsStat && /^(Edit|Write|MultiEdit)$/.test(e.props.tool)) $.ui.log(`tinta diffstat ${e.props.tool} ${e.props.tool_use_id}: output ${typeof e.props.output === 'string' ? 'text' : e.props.output === undefined ? 'none' : `{${Object.keys(e.props.output as object).join(',')}}`} → ${stat ? diffText(stat) : 'none'}`, { to: 'debug' })
       const fresh = stat?.created ? t(lang, 'wordNew') : undefined
-      // the blocks only (and "nuovo"): the app's row already says "+N" itself; the numbers stay in the alt
+      // only what the app's row lacks: the blocks (and "nuovo" for a created file). The desktop's own row already
+      // shows "+N" and "−M" in its git colours on every finished Edit, Write, MultiEdit and NotebookEdit (its
+      // DiffIndicator), so the numbers stay in the alt, never drawn twice
       const extra: ActivityExtra = stat ? { beside: [{ key: 'tinta-diffstat', drawing: diffstatDrawing(stat, diffColors(theme as Look), fresh, CHIP_TOP, false), alt: fresh ? `${diffText(stat)} · ${fresh}` : diffText(stat) }] } : {}
 
       // experiment hoverScope: every row that touched one file in one hover group, its chips lit together
@@ -2704,6 +2817,8 @@ export const register: Register = on => {
     const iconColor = e.props.isErrored ? theme.palette.danger ?? own?.color ?? style.color : own?.color ?? style.color
     // on desktop a tool call is activity: the muted color, nothing bold, the icon dimmed
     const muted = theme.activity?.color ?? theme.palette.muted ?? style.color
+    // a finished Edit or Write: "+N −M" after its file, as on desktop
+    const termStat = !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted && theme.activity?.diffstat !== false ? diffStatOf(e.props.tool, e.props.output, e.props.input) : undefined
     const row = (
       <Box flexDirection="row" gap={1}>
         {/* on desktop the wrench chip before the row is the mark */}
@@ -2715,6 +2830,8 @@ export const register: Register = on => {
         <Text wrap="truncate-end">
           <Text {...(quiet ? textStyle(muted) : textStyle(style.nameColor, true))}>{e.props.tool}</Text>
           <Text {...textStyle(quiet ? muted : style.color)} dimColor={quiet}>{` ${summary}`}</Text>
+          {termStat && <Text color={theme.palette.success ?? '#3FB950'}>{` +${termStat.added}`}</Text>}
+          {termStat && <Text color={theme.palette.danger ?? '#E5484D'}>{` −${termStat.removed}`}</Text>}
           {e.props.isInterrupted && <Text dimColor>{' · Interrupted'}</Text>}
         </Text>
       </Box>
@@ -2859,6 +2976,9 @@ export const register: Register = on => {
     const picked = list.length > 0 && !keepsStep ? list[(await read($, turn)) % list.length] : undefined
     const word = picked ?? (isBare ? spinnerFallback(style?.words ?? {}, t(lang, 'working')) : undefined)
     const desktop = e.surface === 'desktop'
+    // the session's state: a dialog or a question open says "waiting for you" in place of the step (the waiting
+    // atom alone is read here, so the row redraws only as a dialog opens or closes)
+    const isWaiting = await read($, waiting)
     // on desktop the app's own step text, time and caret stay; the theme's
     // suffix glyph read as noise after a real step, so the text goes bare
     const body = await next({
@@ -2866,7 +2986,8 @@ export const register: Register = on => {
       props: {
         ...e.props,
         ...(word !== undefined ? { word } : {}),
-        ...(desktop ? { suffix: '' } : style?.suffix !== undefined ? { suffix: style.suffix } : {}),
+        ...(isWaiting ? { message: t(lang, 'statusWaiting') } : {}),
+        ...(desktop || isWaiting ? { suffix: '' } : style?.suffix !== undefined ? { suffix: style.suffix } : {}),
       },
     })
     const els = $.ui.resolve(e)
@@ -2893,6 +3014,9 @@ export const register: Register = on => {
         ? claudeDrawing(modeInk ? { solid: readableOnBoth(modeInk) ?? modeInk } : ink, SPINNER_MARK, moves ? perMode.motion : false, perMode.seconds)
         : claudeDrawing(ink, SPINNER_MARK, moves ? (style?.mark === 'pulse' ? 'pulse' : 'spin') : false),
     )
+    // waiting: the state's still pause sign in its colour, its own element after the burst and the wave (their
+    // frames stay byte for byte as they were, so their loops never restart); one source per state, never per render
+    const waitMark = isWaiting ? statusMarkDrawing('waiting', stateInkOf(theme, 'waiting', e.surface), SPINNER_MARK - 2) : undefined
     // the voice wave, where the theme asks: in its colours, or Claude's gradient and the accents
     // the phase from the clock: a new word re-renders the row, the wave carries on where it was
     // none with only background work running: the app's pill takes the row
@@ -2916,6 +3040,11 @@ export const register: Register = on => {
         {wave && (
           <Box key="tinta-wave" flexShrink={0} paddingRight={1}>
             <Svg source={steadyFrame(wave.source)} alt={t(lang, 'waveAlt')} width={wave.width} height={wave.height} isInteractive />
+          </Box>
+        )}
+        {waitMark && (
+          <Box key="tinta-spinner-state" flexShrink={0} paddingRight={1}>
+            <Svg source={waitMark.source} alt={`${STATUS_GLYPHS.waiting} ${t(lang, 'statusWaiting')}`} width={waitMark.width} height={waitMark.height} />
           </Box>
         )}
         {/* the app's row in a box that takes the rest of the row and may shrink,
@@ -2995,6 +3124,12 @@ export const register: Register = on => {
     const raw = await read($, current)
     const hasSounds = SOUND_EVENTS.some(name => typeof raw?.sounds?.[name] === 'string')
     const silent = hasSounds ? await isMuted($, raw) : false
+    // 8. the session's state, the same signal as the spinner's: working, waiting for you (the band tinted), done
+    const state = sessionState(e.props.isWorking, await read($, waiting), await read($, phase))
+    const stateInk = state === undefined ? undefined : stateInkOf(theme, state, e.surface)
+    const stateWord = state === undefined ? undefined : t(lang, STATE_WORDS[state])
+    // waiting: the band in the state's colour, translucent (the theme's own background otherwise)
+    const ground = state === 'waiting' && stateInk !== undefined ? { backgroundColor: withAlpha(stateInk, 0.16), paddingX: 1 } : style.background ? { backgroundColor: style.background, paddingX: 1 } : {}
 
     // the desktop band, drawn: who (the burst and the name), the session's health in one cluster, the turn's time in
     // its fixed slot, then the buttons (background work, sounds, the theme off) grouped right; nothing moves as the
@@ -3013,7 +3148,9 @@ export const register: Register = on => {
       // what fits the band's width (its columns at the code font's ~7.6 px), the native buttons' room set aside: the
       // style's name goes first, then the timer, the limits and the context, so the row never overlaps or wraps
       const buttonsPx = [busy > 0 ? `◷ ${busy}` : '', hasSounds ? `♪ ${t(lang, 'soundOff')}` : '', style.showToggle ? t(lang, 'themeOff') : ''].filter(Boolean).reduce((px, label) => px + label.length * 7.4 + 24, 0)
-      const budget = room * 7.6 - buttonsPx - 40
+      // the state's slot is never dropped: its room set aside first
+      const status = state !== undefined && stateInk !== undefined && stateWord !== undefined ? bandStatusDrawing(state, stateWord, stateInk, Object.values(STATE_WORDS).map(key => t(lang, key))) : undefined
+      const budget = room * 7.6 - buttonsPx - 40 - (status === undefined ? 0 : status.width + 16)
       const steps = [
         [true, true, true, true],
         [false, true, true, true],
@@ -3034,9 +3171,14 @@ export const register: Register = on => {
       const healthAlt = [percent !== undefined ? `${t(lang, 'context')} ${percent}%` : '', ...limits.map(one => `${one.label} ${one.percent}%`)].filter(Boolean).join(' · ')
 
       return (
-        <Box key="tinta-band" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} {...(style.background ? { backgroundColor: style.background, paddingX: 1 } : {})}>
-          <Box key="tinta-band-who" flexDirection="row" alignItems="center">
+        <Box key="tinta-band" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} {...ground}>
+          <Box key="tinta-band-who" flexDirection="row" alignItems="center" gap={2}>
             <Svg source={who.source} alt={t(lang, 'themeAlt', { name: theme.name })} width={who.width} height={who.height} />
+            {status && (
+              <Box key="tinta-band-state" flexDirection="row" alignItems="center" flexShrink={0}>
+                <Svg source={status.source} alt={stateWord ?? ''} width={status.width} height={status.height} />
+              </Box>
+            )}
           </Box>
           <Box key="tinta-band-session" flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
             {health && <Svg source={health.source} alt={healthAlt} width={health.width} height={health.height} />}
@@ -3061,7 +3203,7 @@ export const register: Register = on => {
         justifyContent="space-between"
         alignItems="center"
         gap={1}
-        {...(style.background ? { backgroundColor: style.background, paddingX: 1 } : {})}
+        {...ground}
       >
         <Box key="tinta-band-who" flexDirection="row" gap={1} alignItems="center">
           <Box key="tinta-band-name" flexDirection="row" gap={0} alignItems="center">
@@ -3077,6 +3219,9 @@ export const register: Register = on => {
               />
             )}
           </Box>
+          {state !== undefined && stateWord !== undefined && (
+            <Text key="tinta-band-state" {...textStyle(stateInk, true)}>{`${STATUS_GLYPHS[state]} ${stateWord}`}</Text>
+          )}
           {/* the template menus: palette and style, each applies at once */}
           {menus && SelectEl && (
             <Box key="tinta-band-templates" flexDirection="row" gap={1} alignItems="center">

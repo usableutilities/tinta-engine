@@ -1,6 +1,6 @@
 {
   "name": "tinta",
-  "version": "0.3.96",
+  "version": "0.3.97",
   "description": "Motore di temi: legge un tema JSON e ridisegna la conversazione",
   "author": { "name": "Gabriele Chesi" },
   "types": "./types/index.d.ts"

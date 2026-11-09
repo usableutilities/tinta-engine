@@ -1134,17 +1134,6 @@ const applyTheme = async ($: Dollar, file: string) => {
   await load($)
 }
 
-/** When each heading first appeared (its reply, place and words): its one-shot effect plays once from there. */
-const BORN = new Map<string, number>()
-const bornOf = (key: string, now: number): number => {
-  const held = BORN.get(key)
-  if (held !== undefined) return held
-  if (BORN.size > 500) BORN.delete(BORN.keys().next().value as string)
-  BORN.set(key, now)
-
-  return now
-}
-
 /** How long a reply's text must not grow before its decoding stops, ms; the longest reply decoded. */
 export const DECODE_QUIET_MS = 1200
 export const DECODE_MAX = 600
@@ -2608,14 +2597,15 @@ export const register: Register = on => {
           )
         }
       }
-      const headingNow = await $.clock.now().catch(() => Date.now())
       const body = decodeArt ? [decodeArt] : parts.map((part, i) => {
         if (part.kind === 'table') return tableArt({ Box, Text }, part, tableLook, cells, `tinta-table-${i}`)
         if (part.kind === 'heading') {
           const words = headingText(part.text)
           // a template's heading effect (fx-headings.ts): its own Svg, the ink's left edge on the text's
-          const effect = theme.hints?.headings?.effect
-          const fx = Svg && words !== '' && HEADING_EFFECTS.includes(effect as never) ? fxHeading({ text: words, level: part.level, width: roomPx(cells), colors: headingInk, effect: effect as (typeof HEADING_EFFECTS)[number], font: theme.hints?.headings?.font ?? displayKind(theme.typography?.display), motion: theme.motion !== false }) : undefined
+          const effect = theme.hints?.headings?.effect as (typeof HEADING_EFFECTS)[number] | undefined
+          // the last line of a reply still arriving may yet grow: the still words alone until its line ends (only the words' drawing changes, no effect restarts)
+          const growing = turnRunning && i === parts.length - 1 && !e.props.text.endsWith('\n')
+          const fx = Svg && words !== '' && effect !== undefined && HEADING_EFFECTS.includes(effect) ? fxHeading({ text: words, level: part.level, width: roomPx(cells), colors: headingInk, effect, font: theme.hints?.headings?.font ?? displayKind(theme.typography?.display), motion: theme.motion !== false && !growing }) : undefined
           if (fx && Svg) {
             const rhythm = HEADING_RHYTHM[part.level] ?? { top: 1, bottom: 0.25 }
 
@@ -2627,8 +2617,14 @@ export const register: Register = on => {
 
             return (
               <Box key={`tinta-heading-${i}`} flexDirection="column" marginTop={Math.round(((i === 0 ? 0 : rhythm.top) - fx.top / MARGIN_UNIT_PX) * 100) / 100} marginBottom={ruleW > 0 ? rhythm.bottom : Math.round((rhythm.bottom - fx.top / MARGIN_UNIT_PX) * 100) / 100}>
-                <Box key="tinta-heading-ink" flexDirection="row" marginLeft={-Math.round((fx.inset / CELL_PX) * 100) / 100}>
-                  <Svg source={phaseLock(fx.source, headingNow, bornOf(`${e.requestId ?? ''}:${i}:${words}`, headingNow))} alt={words} width={fx.width} height={fx.height} />
+                <Box key="tinta-heading-ink" flexDirection="column" marginLeft={-Math.round((fx.inset / CELL_PX) * 100) / 100}>
+                  <Svg source={fx.source} alt={words} width={fx.width} height={fx.height} />
+                  {/* the effect's loop over the words, pulled up by its own height: a frame the desktop keeps across its redraws (steadyFrame), its clock running; the words stay painted whatever it does */}
+                  {fx.loop !== undefined && (
+                    <Box key="tinta-heading-loop" flexDirection="row" marginTop={-Math.round((fx.height / MARGIN_UNIT_PX) * 100) / 100}>
+                      <Svg source={steadyFrame(fx.loop)} alt="…" width={fx.width} height={fx.height} isInteractive />
+                    </Box>
+                  )}
                 </Box>
                 {ruleW > 0 && (
                   <Box key="tinta-heading-rule" flexDirection="row" marginTop={Math.round(((5 - fx.top) / MARGIN_UNIT_PX) * 100) / 100}>
@@ -3124,12 +3120,12 @@ export const register: Register = on => {
     const raw = await read($, current)
     const hasSounds = SOUND_EVENTS.some(name => typeof raw?.sounds?.[name] === 'string')
     const silent = hasSounds ? await isMuted($, raw) : false
-    // 8. the session's state, the same signal as the spinner's: working, waiting for you (the band tinted), done
+    // 8. the session's state, the same signal as the spinner's: working, waiting for you, done
     const state = sessionState(e.props.isWorking, await read($, waiting), await read($, phase))
     const stateInk = state === undefined ? undefined : stateInkOf(theme, state, e.surface)
     const stateWord = state === undefined ? undefined : t(lang, STATE_WORDS[state])
-    // waiting: the band in the state's colour, translucent (the theme's own background otherwise)
-    const ground = state === 'waiting' && stateInk !== undefined ? { backgroundColor: withAlpha(stateInk, 0.16), paddingX: 1 } : style.background ? { backgroundColor: style.background, paddingX: 1 } : {}
+    // the band's ground is the theme's alone, the same in every state: the state is its mark and its word, nothing else
+    const ground = style.background ? { backgroundColor: style.background, paddingX: 1 } : {}
 
     // the desktop band, drawn: who (the burst and the name), the session's health in one cluster, the turn's time in
     // its fixed slot, then the buttons (background work, sounds, the theme off) grouped right; nothing moves as the

@@ -3,7 +3,7 @@ import { WAVE, escapeXml, waveDrawing } from './svg'
 
 /**
  * The design system's signature motions (styleHints part 2): the waiting
- * wave's kinds and the headings' effects, all SMIL inside the Svg (it plays
+ * wave's kinds, all SMIL inside the Svg (it plays
  * where the desktop draws an Svg as an image), every animation's phase from
  * the clock (`begin` negative), still when the theme has no motion.
  */
@@ -362,73 +362,6 @@ export const rainBackdrop = (x: number, w: number, h: number, colors: readonly s
   }
 
   return `<defs>${defs.join('')}</defs>${out.join('')}`
-}
-
-export type HeadingEffect = 'decode' | 'gradient-drift' | 'silver-cut' | 'neon-tube' | 'frost' | 'glitch' | 'sparkle' | 'gradient' | 'leaf' | 'serif'
-
-/**
- * A heading's signature effect laid over its drawing's parts (headingDrawing
- * in reply.tsx hands the text elements and their size): extra defs, a
- * wrapper for the text, and pieces over it. The text stays drawn in full in
- * every frame but decode's first second, and is the Svg's alt.
- */
-export const headingEffect = (effect: HeadingEffect | undefined, motion: boolean, now: number, size: { width: number; height: number }, colors: readonly string[]): { defs: string; open: string; close: string; over: string; gradient: string } => {
-  const at = (dur: number, lag = 0) => phaseAt(now, dur, lag)
-  const none = { defs: '', open: '', close: '', over: '', gradient: '' }
-  const first = colors[0] ?? '#FFFFFF'
-  const last = colors[colors.length - 1] ?? first
-  switch (effect) {
-    case 'gradient-drift':
-      return { ...none, gradient: motion ? `<animateTransform attributeName="gradientTransform" type="translate" values="-0.5 0;0.5 0;-0.5 0" dur="8s" repeatCount="indefinite" begin="${at(8)}s"/>` : '' }
-    case 'silver-cut':
-      return {
-        ...none,
-        defs: `<linearGradient id="cut" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/><stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.85"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>${motion ? `<animateTransform attributeName="gradientTransform" type="translate" values="-1 0;1 0;1 0" keyTimes="0;0.3;1" dur="6s" repeatCount="indefinite" begin="${at(6)}s"/>` : ''}</linearGradient><mask id="cutm"><g id="cutt"></g></mask>`,
-        over: 'CUT',
-      }
-    case 'neon-tube':
-      return {
-        ...none,
-        defs: `<filter id="neon" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`,
-        open: `<g filter="url(#neon)">${motion ? `<animate attributeName="opacity" dur="5s" repeatCount="indefinite" keyTimes="0;0.02;0.04;0.06;0.08;1" values="1;0.3;1;0.4;0.8;1" begin="${at(5)}s"/>` : ''}`,
-        close: '</g>',
-      }
-    case 'frost':
-      return {
-        ...none,
-        defs: `<filter id="frost" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur in="SourceAlpha" stdDeviation="2" result="b"/><feFlood flood-color="#FFFFFF" flood-opacity="0.35"/><feComposite in2="b" operator="in" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`,
-        open: '<g filter="url(#frost)">',
-        close: '</g>',
-      }
-    case 'glitch':
-      return {
-        ...none,
-        over: motion ? `GLITCH:${at(3)}` : '',
-      }
-    case 'sparkle': {
-      const stars = [0.15, 0.45, 0.8]
-        .map((x, i) => {
-          const cx = Math.round(size.width * x)
-          const cy = Math.round(size.height * (0.2 + 0.25 * i))
-          const twinkle = motion ? `<animate attributeName="opacity" dur="${1.6 + i * 0.4}s" repeatCount="indefinite" values="0;1;0" begin="${at(1.6 + i * 0.4, i * 0.5)}s"/>` : ''
-
-          return `<path d="M${cx} ${cy - 4}L${cx + 1} ${cy - 1}L${cx + 4} ${cy}L${cx + 1} ${cy + 1}L${cx} ${cy + 4}L${cx - 1} ${cy + 1}L${cx - 4} ${cy}L${cx - 1} ${cy - 1}Z" fill="${i % 2 ? last : '#FFFFFF'}" opacity="${motion ? 0 : 0.8}">${twinkle}</path>`
-        })
-        .join('')
-
-      return { ...none, over: stars }
-    }
-    case 'decode':
-      return {
-        ...none,
-        defs: `<clipPath id="dec"><rect x="0" y="0" width="${motion ? 0 : size.width}" height="${size.height}">${motion ? `<animate attributeName="width" from="0" to="${size.width}" dur="0.9s" fill="freeze"/>` : ''}</rect></clipPath>`,
-        open: '<g clip-path="url(#dec)">',
-        close: '</g>',
-        over: motion ? `<rect x="0" y="${Math.round(size.height * 0.75)}" width="2" height="${Math.round(size.height * 0.2)}" fill="${first}"><animate attributeName="x" from="0" to="${size.width}" dur="0.9s" fill="freeze"/><animate attributeName="opacity" values="1;0" begin="0.9s" dur="0.2s" fill="freeze"/></rect>` : '',
-      }
-    default:
-      return none
-  }
 }
 
 /**

@@ -15,6 +15,8 @@ export type Task = {
   endedAt: number | null
   status: TaskStatus
   toolUseId?: string
+  /** Ended by Tinta, not by the task: it was running in a process that is gone (a restart, a resumed session). */
+  orphaned?: true
 }
 
 /** Finished tasks kept; the oldest go first. */
@@ -44,6 +46,25 @@ export const taskEnded = (list: readonly Task[], idOrToolUse: string, status: Ex
 
   return changed ? capDone(next) : [...list]
 }
+
+/**
+ * The tasks still marked running from a process that is gone: background shells, monitors and agents die
+ * with it, so they are ended (stopped, `orphaned`) at `at`. Only those started before `before`.
+ */
+export const orphanedBefore = (list: readonly Task[], before: number, at: number): Task[] => {
+  let changed = false
+  const next = list.map(one => {
+    if (one.status !== 'running' || one.startedAt >= before) return one
+    changed = true
+
+    return { ...one, status: 'stopped' as const, endedAt: Math.max(at, one.startedAt), orphaned: true as const }
+  })
+
+  return changed ? capDone(next) : [...list]
+}
+
+/** A running task this old is shown apart ("Vecchie"), whatever its state: no one runs this long unnoticed. */
+export const STALE_MS = 12 * 60 * 60 * 1000
 
 /** Only the running tasks: "Svuota". */
 export const clearDone = (list: readonly Task[]): Task[] => list.filter(one => one.status === 'running')

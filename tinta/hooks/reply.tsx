@@ -1,7 +1,9 @@
 import type { RenderElement } from 'claude-code'
 
 import { CLEAR, HALO, drawnProps, meshColors } from './fills'
-import { GLOW_FONT_PX, GLOW_UNIT_PX, textPx } from './glow'
+import { GLOW_COLUMN_PX, GLOW_FONT_PX, textPx } from './glow'
+import { DENSITY, rhythmAt } from './densita'
+import type { DensityScale } from './densita'
 import type { Drawing } from './svg'
 import { CHIP, escapeXml, measure, stopsOf } from './svg'
 import { darkOnly, readableOnBoth } from './theme'
@@ -113,15 +115,17 @@ export const headingColors = (look: Look): string[] => {
  * underline fading to the right. Undefined when it does not fit in
  * HEADING_LINES_MAX lines: the app's Markdown draws it then.
  */
-export const headingDrawing = (text: string, level: number, colors: readonly string[], room: number, font = APP_FONT): Drawing | undefined => {
-  const size = round((HEADING_CSS_PX[level] ?? 17) * CSS_TO_PX)
-  const lines = headingLines(text, size, room)
+export const headingDrawing = (text: string, level: number, colors: readonly string[], room: number, font = APP_FONT, scale: DensityScale = DENSITY.normal): Drawing | undefined => {
+  // the person's density (densita.ts): the size and the underline from its row, normal as these constants
+  const size = round((scale.heading[level] ?? HEADING_CSS_PX[level] ?? 17) * CSS_TO_PX)
+  // the line's room with the ink's own margin (4% and 4 px, as `width` below) inside it: the drawing never needs more than `room`
+  const lines = headingLines(text, size, (Math.floor(room) - 5) / 1.04)
   if (lines === undefined) return undefined
   const pitch = Math.round(size * HEADING_LINE)
   const widest = Math.max(...lines.map(line => headingPx(line, size)))
   // a little room right: the real face may set wider than the advances say
-  const width = Math.min(Math.ceil(room), Math.ceil(widest * 1.04 + 4))
-  const rule = level === 2 ? { gap: 5, height: 1.5 } : undefined
+  const width = Math.min(Math.floor(room), Math.ceil(widest * 1.04 + 4))
+  const rule = level === 2 ? { ...scale.rule } : undefined
   const height = pitch * lines.length + (rule ? rule.gap + Math.ceil(rule.height) : 0)
   const list = colors.length >= 2 ? colors : [colors[0] ?? '#A970FF', colors[0] ?? '#A970FF']
   const stops = list.map((hex, i) => `<stop offset="${round(i / (list.length - 1))}" stop-color="${hex}"/>`).join('')
@@ -146,8 +150,9 @@ export const headingArt = (
   level: number,
   first: boolean,
   key: string,
+  scale: DensityScale = DENSITY.normal,
 ): RenderElement => {
-  const rhythm = HEADING_RHYTHM[level] ?? { top: 1, bottom: 0.25 }
+  const rhythm = rhythmAt(HEADING_RHYTHM[level] ?? { top: 1, bottom: 0.25 }, scale)
 
   return (
     <Box key={key} flexDirection="row" marginTop={first ? 0 : rhythm.top} marginBottom={rhythm.bottom}>
@@ -156,8 +161,16 @@ export const headingArt = (
   )
 }
 
-/** The px a reply's text has across, from its cells (the viewport's columns less the bubble's own). */
-export const roomPx = (cells: number): number => Math.max(10, cells) * GLOW_UNIT_PX
+/** CSS px a drawing in the reply keeps clear of its right edge: the cells' estimate errs (the bubble's padding counted in the sans 1ch, the code font's ch only bracketed). */
+export const ROOM_SAFETY_PX = 12
+/**
+ * The px a reply's text has across, from its cells (the viewport's columns
+ * less the bubble's own). The desktop counts `viewport.columns` in the code
+ * font's ch (glow.tsx GLOW_COLUMN_PX, ~7.6 px), not the sans 1ch of a Box
+ * (GLOW_UNIT_PX, ~9.1 px): read at the sans ch the room came out ~20% wider
+ * than the row, and a heading wrapped to it ran past the right edge, cut mid-word.
+ */
+export const roomPx = (cells: number): number => Math.max(10, Math.max(10, cells) * GLOW_COLUMN_PX - ROOM_SAFETY_PX)
 
 // ── code ────────────────────────────────────────────────────────────────────
 
@@ -234,12 +247,14 @@ export const codeArt = (
   tone: CodeTone,
   first: boolean,
   key: string,
+  /** The share of the normal room above and below (densita.ts). */
+  space = 1,
 ): RenderElement => {
   const dots = dotsDrawing(tone.dots)
   const chip = part.language ? badgeDrawing(part.language, tone.accent) : undefined
 
   return (
-    <Box key={key} flexDirection="column" marginTop={first ? 0 : 1} marginBottom={1}>
+    <Box key={key} flexDirection="column" marginTop={first ? 0 : space} marginBottom={space}>
       <Box
         key="tinta-code-head"
         flexDirection="row"

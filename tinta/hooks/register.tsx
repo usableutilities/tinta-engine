@@ -8,16 +8,22 @@ import { wrapText, GLOW_PAD as BUBBLE_GLOW_PAD_XY, USER_GLOW, USER_MESH, breakPr
 import { firstAppleLanguage, localeOf, pickLocale, t } from './i18n'
 import { alertsDue, figuresOf, healthParts, limitName } from './salute'
 import type { Figures } from './salute'
-import { clearDone, notificationsIn, statusFrom, taskEnded, taskFromCall, taskStarted } from './attivita'
+import { STALE_MS as TASK_STALE_MS, clearDone, notificationsIn, orphanedBefore, statusFrom, taskEnded, taskFromCall, taskStarted } from './attivita'
 import type { Task, TaskKind } from './attivita'
 import { pageRainDrawing, phaseLock, steadyFrame, waveKindDrawing } from './animazioni'
+import { READING_DEFAULT, READING_MARK_TEXT, findSpan, highlightOverlay, isReading, readingMarkDrawing, showsHighlight, showsMark } from './lettura'
+import type { Reading } from './lettura'
 import { isOwnBackdrop, pagePlan } from './fx-page'
 import { decodeOverlay, isPlainProse } from './decodifica'
 import { enforcement, isSealed, machineId, onWindows, openTheme, sealHome, sealHomeFrom, secretFrom } from './sigillo'
+import { NOTICE_MS, UPDATE_POLL_MS, manifestVersion, updateWatcher } from './aggiornamento'
+import { registerVolto } from './volto/volto'
 import type { SealContext } from './sigillo'
 import { STATUS_GLYPHS, bandHealthDrawing, bandStatusDrawing, bandTimerDrawing, bandWhoDrawing, clockText, statusMarkDrawing } from './fascia'
 import type { SessionState } from './fascia'
 import { HEADING_EFFECTS, headingDrawing as fxHeading } from './fx-headings'
+import { densityOf, densityOfLook, rhythmAt, scaleOf, scaledDrawing, withDensity } from './densita'
+import type { Density, DensityScale } from './densita'
 import { overlayAlpha, UNICORNO_CYCLE, UNICORNO_LOOK, candyAlpha, cycleSetAt, safeMeshStrength, CLAUDE_COOL, NOTICE_TRIES_MS, SPINNER_MODES, TASK_END_ICONS, footerText, riskTagline, tokensText, writtenFile, checkboxDrawing, cleanTaskText, durationText, newlyDone, pillDrawing, planAfter, planCount, ringDrawing, taskEnd, todosOf } from './esperimenti'
 import type { PlanItem, TurnStats } from './esperimenti'
 import { CODE_MAX, codeArt, codeSource, diffColors, diffStatOf, diffstatDrawing, diffText, fenceInfo, HEADING_RHYTHM, HEADING_RULE_SHARE, headingArt, headingColors, headingDrawing, headingText, roomPx } from './reply'
@@ -27,6 +33,8 @@ import { APP_TEXT, APP_BACKGROUND, APP_BUBBLE, BUBBLE_PAD, alphaEdge, featureOn,
 import type { Border, Look, SoundEvent, Surface, Theme } from './theme'
 
 const isOff = atom({ plugin: 'tinta', key: 'isOff' } as const, false)
+// the sentence the face's voice is reading now (volto/parla.ts writes it; lettura.ts)
+const lettura = atom({ plugin: 'tinta', key: 'voltoLettura' } as const, { text: '', mode: READING_DEFAULT } as Reading, { shape: 'lettura-1' })
 const source = atom({ plugin: 'tinta', key: 'source' } as const, '')
 const turn = atom({ plugin: 'tinta', key: 'turn' } as const, 0)
 const themes = atom({ plugin: 'tinta', key: 'themes' } as const, [])
@@ -44,6 +52,7 @@ const stamps = atom({ plugin: 'tinta', key: 'stamps' } as const, {})
 /** A theme's sound volume when it names none. */
 const VOLUME = 0.6
 const tasksNow = atom({ plugin: 'tinta', key: 'tasksNow' } as const, 0)
+const tasksStaleOpen = atom({ plugin: 'tinta', key: 'tasksStaleOpen' } as const, false)
 const tasksDoneOpen = atom({ plugin: 'tinta', key: 'tasksDoneOpen' } as const, false)
 const plan = atom({ plugin: 'tinta', key: 'plan' } as const, [])
 const replyOrder = atom({ plugin: 'tinta', key: 'replyOrder' } as const, {})
@@ -55,6 +64,15 @@ const waiting = atom({ plugin: 'tinta', key: 'waiting' } as const, false)
 const phase = atom({ plugin: 'tinta', key: 'phase' } as const, 'idle')
 
 /** The Attività pane. */
+// riga "[voce]: # (...)" scritta per la voce del volto, anche parziale in coda
+export const withoutSpokenLine = (text: string): string => {
+  const cut = text
+    .replace(/^[ \t]*\[voce\]:[ \t]*#[ \t]*\(([^\n]*)\)[ \t]*$/gm, '')
+    .replace(/\n?[ \t]*\[voce\]:[ \t]*#[ \t]*\(([^\n]*?)\)?[ \t]*$/, '')
+    .replace(/\n[ \t]*\[(v(o(c(e(\](:[ \t]*#?)?)?)?)?)?)?$/, '')
+  return cut === text ? text : cut.replace(/\s+$/, '')
+}
+
 export const ATTIVITA = 'tinta-attivita'
 /** The tools whose calls can start background work. */
 const BACKGROUND_TOOLS = ['Agent', 'Task', 'Bash', 'Monitor', 'Workflow'] as const
@@ -497,10 +515,16 @@ export const hasAttachments = (e: { props: { text: string }; attachments?: reado
 /**
  * A prompt's words as the app's bubble shows them: HTML comments gone (the
  * app's `<!-- reply N -->` marker before a quoted reply), blank edges trimmed;
- * the rest is Markdown (a quote's "> " lines, bold, lists).
+ * the rest is Markdown (a quote's "> " lines, bold, lists). Text pasted from a
+ * terminal keeps its words: a CRLF is one break, and the control characters
+ * the bubble does not draw (a CR alone, an ANSI code's ESC) are dropped, so a
+ * Text or Markdown of ours never holds one.
  */
 export const shownText = (text: string): string =>
   text
+    .replace(/\r\n?/g, match => (match === '\r\n' ? '\n' : ''))
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/^[ \t]*\n+/, '')
     .replace(/\n+[ \t]*$/, '')
@@ -913,8 +937,13 @@ const userFill = async ($: Dollar, accent: string | undefined, surface: Surface)
 }
 
 /** The look to draw on `surface`: variant, safety rules and contrast applied. */
-const lookOn = async ($: Dollar, theme: Theme | null, surface: Surface): Promise<Look | null> =>
-  theme === null ? null : lookFor(theme, appearanceFor(theme, (await read($, appearance)) ?? undefined, surface), surface)
+const lookOn = async ($: Dollar, theme: Theme | null, surface: Surface): Promise<Look | null> => {
+  if (theme === null) return null
+  const shown = lookFor(theme, appearanceFor(theme, (await read($, appearance)) ?? undefined, surface), surface)
+
+  // the person's density (preferenze.json), the desktop's own drawings only
+  return surface === 'desktop' ? withDensity(shown, densityOf(((await read($, prefs)) as Prefs).density)) : shown
+}
 
 const look = async ($: Dollar, surface: Surface) => lookOn($, await active($), surface)
 
@@ -923,6 +952,13 @@ const detectAppearance = async ($: Dollar) => {
   const rows = await $.config.list().catch(() => [])
   const mode = appearanceOf(rows.find(row => row.key === 'theme')?.value)
   await update($, appearance, () => mode ?? null)
+  await republishColors($)
+}
+
+/** The colours again for another appearance (light/dark) of the same theme. */
+const republishColors = async ($: Dollar) => {
+  const dir = await home($)
+  if (dir !== undefined) await publishColors($, dir).catch(() => undefined)
 }
 
 const showStatus = ($: Dollar, theme: Theme | null) =>
@@ -951,18 +987,86 @@ const seed = async ($: Dollar) => {
   }
 }
 
+/**
+ * Publishes the active theme's resolved colours, in the clear, to ~/.claude/tinta/active-colors.json,
+ * for other mods (the volto face) that cannot open a sealed theme: only colours, nothing else of the
+ * theme. Written when they change.
+ */
+let publishedColors = ''
+export const colorsOf = (palette: { [key: string]: string | undefined } | undefined, id: string | undefined, mode: 'dark' | 'light') => ({
+  id: id ?? null,
+  mode,
+  bg: palette?.ink ?? null,
+  surface: palette?.surface ?? null,
+  text: palette?.text ?? null,
+  muted: palette?.muted ?? null,
+  accent: palette?.accent ?? null,
+  accent2: palette?.accentSoft ?? palette?.success ?? null,
+})
+type Stops = { colors: string[]; angle?: number }
+const HEX = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i
+
+/** The colours of a paint, in order, when it is a gradient (a solid is one colour, a pattern none). */
+const stopsOf = (fill: unknown): Stops | undefined => {
+  if (typeof fill === 'string') return HEX.test(fill) ? { colors: [fill] } : undefined
+  const g = (fill as { gradient?: { angle?: unknown; stops?: unknown } } | undefined)?.gradient
+  if (!g || !Array.isArray(g.stops)) return undefined
+  const colors = g.stops.map(one => (Array.isArray(one) ? one[0] : undefined)).filter((c): c is string => typeof c === 'string' && HEX.test(c))
+
+  return colors.length > 0 ? { colors, ...(typeof g.angle === 'number' ? { angle: g.angle } : {}) } : undefined
+}
+
+/**
+ * The theme's multi-colour palette, as the theme actually paints it: the assistant label's gradient, else the
+ * band title's, else the headings', else its Claude colour set, else accent and second accent. 2-5 stops, in
+ * order, no repeats (a long gradient is sampled evenly, keeping both ends).
+ */
+export const paletteOf = (shown: unknown, theme: unknown): { palette: string[]; gradient_angle?: number } => {
+  type Bag = { assistant?: { labelFill?: unknown }; band?: { titleFill?: unknown }; styleHints?: { headings?: { fill?: unknown }; roles?: { claude?: unknown } }; palette?: { [key: string]: string | undefined } }
+  const s = (shown ?? {}) as Bag
+  const t = (theme ?? {}) as Bag
+  const roles = (s.styleHints?.roles?.claude ?? t.styleHints?.roles?.claude) as unknown
+  const pal = s.palette ?? t.palette ?? {}
+  const candidates: (Stops | undefined)[] = [
+    stopsOf(s.assistant?.labelFill ?? t.assistant?.labelFill),
+    stopsOf(s.band?.titleFill ?? t.band?.titleFill),
+    stopsOf(s.styleHints?.headings?.fill ?? t.styleHints?.headings?.fill),
+    Array.isArray(roles) ? { colors: roles.filter((c): c is string => typeof c === 'string' && HEX.test(c)) } : undefined,
+    { colors: [pal.accent, pal.accentSoft ?? pal.success].filter((c): c is string => typeof c === 'string' && HEX.test(c)) },
+  ]
+  const unique = (list: string[]) => list.filter((c, i) => list.findIndex(o => o.toLowerCase() === c.toLowerCase()) === i)
+  const chosen = candidates.find(one => one !== undefined && unique(one.colors).length >= 2)
+  if (!chosen) return { palette: unique(candidates.flatMap(one => one?.colors ?? [])).slice(0, 5) }
+  let colors = unique(chosen.colors)
+  if (colors.length > 5) colors = [0, 1, 2, 3, 4].map(i => colors[Math.round((i * (colors.length - 1)) / 4)] as string)
+
+  return { palette: colors, ...(chosen.angle !== undefined ? { gradient_angle: chosen.angle } : {}) }
+}
+
+const publishColors = async ($: Dollar, dir: string) => {
+  const theme = await read($, current)
+  const shown = await lookOn($, theme, 'desktop')
+  const mode = theme === null ? 'dark' : appearanceFor(theme, (await read($, appearance)) ?? undefined, 'desktop')
+  const colors = { ...colorsOf(shown?.palette as { [key: string]: string } | undefined, theme?.id, mode === 'light' ? 'light' : 'dark'), ...(theme === null ? {} : paletteOf(shown, theme)) }
+  const text = `${JSON.stringify(colors, null, 2)}\n`
+  if (text === publishedColors) return
+  publishedColors = text
+  await $.fs.write(joinPath(dir, 'active-colors.json'), text)
+}
+
 /** Re-reads active.json and stores the theme when its text changed. */
 /** The person's own preferences (~/.claude/tinta/preferenze.json), over every theme and template. */
-export type Prefs = { userBubble?: 'app' | 'theme'; sounds?: 'on' | 'off' }
+export type Prefs = { userBubble?: 'app' | 'theme'; sounds?: 'on' | 'off'; density?: Density }
 
 /** preferenze.json read: only the fields known, anything else dropped. */
 export const prefsOf = (text: string): Prefs => {
   try {
-    const raw = JSON.parse(text) as { userBubble?: unknown; sounds?: unknown }
+    const raw = JSON.parse(text) as { userBubble?: unknown; sounds?: unknown; density?: unknown }
 
     return {
       ...(raw.userBubble === 'app' || raw.userBubble === 'theme' ? { userBubble: raw.userBubble } : {}),
       ...(raw.sounds === 'on' || raw.sounds === 'off' ? { sounds: raw.sounds } : {}),
+      ...(typeof raw.density === 'string' && densityOf(raw.density) === raw.density ? { density: raw.density as Density } : {}),
     }
   } catch {
     return {}
@@ -1005,6 +1109,7 @@ const load = async ($: Dollar) => {
   const theme = plain === '' ? null : parseTheme(plain, await read($, locale))
   await update($, source, () => text)
   await update($, current, () => theme)
+  await publishColors($, dir).catch(() => undefined)
   await syncPage($).catch(() => undefined)
   if (!(await read($, isOff))) {
     showStatus($, theme)
@@ -1582,7 +1687,7 @@ const textStyle = (color?: string, bold?: boolean) => ({
 const labelRow = (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   { Box, Text, Svg }: { Box: any; Text: any; Svg?: any },
-  style: LabelArt & { avatarSvg?: string; labelColor?: string },
+  style: LabelArt & { avatarSvg?: string; labelColor?: string; scale?: DensityScale['label'] },
   label: string,
   motion: boolean,
   box: { key?: string; justifyContent?: 'flex-start' | 'flex-end' } = {},
@@ -1639,7 +1744,8 @@ const labelRow = (
       : drawn.orb
         ? besideDrawing(drawn.orb, spacerDrawing(0))
         : timed
-  const art = joined && padBottom(joined, LABEL_SPACE)
+  // the person's density (densita.ts): the whole row drawn at its share, its viewBox kept, its room below; normal as before
+  const art = joined && (style.scale ? scaledDrawing(padBottom(joined, style.scale.space), style.scale.scale) : padBottom(joined, LABEL_SPACE))
   const room = spacerDrawing(LABEL_GAP)
   const alt = meta ? (meta.before ? `${meta.time} · ${label}` : `${label} · ${meta.time}`) : label
 
@@ -1676,6 +1782,8 @@ const tableArt = (
   tone: { accent: string; line: string; text?: string; muted?: string; mode?: 'dark' | 'light'; lines?: boolean },
   room: number,
   key: string,
+  /** The share of the normal room above and below (densita.ts). */
+  space = 1,
 ) => {
   // widths as shares of the bubble, so a narrow window never cuts the table
   const widths = columnWidths(table.header, table.rows, room)
@@ -1705,7 +1813,7 @@ const tableArt = (
   const zebra = withAlpha(tone.mode === 'light' ? '#000000' : '#FFFFFF', TABLE_ZEBRA)
 
   return (
-    <Box key={key} flexDirection="column" marginTop={1} marginBottom={1} {...(tone.lines === true ? { borderStyle: 'round', borderColor: withAlpha(tone.accent, TABLE_EDGE) } : {})}>
+    <Box key={key} flexDirection="column" marginTop={space} marginBottom={space} {...(tone.lines === true ? { borderStyle: 'round', borderColor: withAlpha(tone.accent, TABLE_EDGE) } : {})}>
       <Box key="h" flexDirection="row" alignItems="flex-start" backgroundColor={withAlpha(tone.accent, TABLE_HEAD_TINT)}>
         {table.header.map((h, k) => cell(h, k, true))}
       </Box>
@@ -1755,6 +1863,21 @@ export const styleLabel = (id: string): string => STYLE_LABELS[id] ?? id.charAt(
 
 /** Every text the engine and the themes show is English, whatever the system's language. */
 export const ENGLISH_ONLY = true
+
+/**
+ * Background work dies with the process that ran it, but the list lives in the session's state, which a
+ * resumed session keeps: a process marker in the environment (it survives a plugin reload, never a restart)
+ * tells a new process, and the tasks still marked running from before are closed as no longer running.
+ * The first time (no marker ever set) only tasks older than an hour are closed: one may be running now.
+ */
+const closeOrphans = async ($: Dollar) => {
+  if ((await $.env.get('TINTA_ATTIVITA_RUN')) !== undefined) return
+  const at = await $.clock.now()
+  await $.env.set('TINTA_ATTIVITA_RUN', String(at))
+  const known = (await $.store.get('attivita.marker').catch(() => undefined)) === true
+  await $.store.set('attivita.marker', true).catch(() => undefined)
+  await update($, tasks, list => orphanedBefore(list as Task[], known ? at : at - 60 * 60 * 1000, at))
+}
 
 /** A tracked task's start, stored once (a known id is kept). */
 const startTask = async ($: Dollar, task: Task | undefined) => {
@@ -1832,9 +1955,42 @@ export const spinnerFallback = (words: { [mode: string]: string[] }, fallback = 
     .filter(one => one.trim() !== '')
     .reduce<string | undefined>((short, one) => (short === undefined || [...one].length < [...short].length ? one : short), undefined) ?? fallback
 
+type BandNode = { type?: unknown; props?: { [key: string]: unknown }; children?: unknown[] }
+
+/**
+ * Quello che i plugin sotto Tinta disegnano nella fascia: l'albero di `next(e)` senza i nodi del motore
+ * (`type: 'engine'`, la fascia di serie che Tinta sostituisce); undefined se non resta nulla da mostrare.
+ */
+export const beneathOf = (tree: unknown): RenderElement | undefined => {
+  const strip = (node: unknown): unknown => {
+    if (typeof node === 'string') return node.trim() === '' ? undefined : node
+    if (typeof node !== 'object' || node === null) return undefined
+    const one = node as BandNode
+    if (one.type === 'engine' || typeof one.type !== 'string') return undefined
+    const kids = (one.children ?? []).map(strip).filter(kid => kid !== undefined)
+    // un Box rimasto vuoto non disegna nulla: via anche lui
+    if (one.type === 'Box' && kids.length === 0) return undefined
+
+    return one.children === undefined ? one : { ...one, children: kids }
+  }
+
+  return strip(tree) as RenderElement | undefined
+}
+
+/** La larghezza stimata (px, desktop) di un albero altrui: i suoi testi e i bottoni, per farle posto nella fascia. */
+export const beneathPx = (tree: unknown): number => {
+  if (typeof tree === 'string') return tree.length * 7.6
+  if (typeof tree !== 'object' || tree === null) return 0
+  const one = tree as BandNode
+  const own = one.type === 'Button' || one.type === 'Select' ? String(one.props?.label ?? '').length * 7.4 + 24 : one.type === 'Svg' ? Number(one.props?.width ?? 0) : 0
+
+  return own + (one.children ?? []).reduce<number>((px, kid) => px + beneathPx(kid), 0) + 8
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await detectLocale($).catch(() => undefined)
+    await closeOrphans($).catch(() => undefined)
     await $.command
       .register({
         name: 'tinta',
@@ -1864,6 +2020,17 @@ export const register: Register = on => {
       await refreshSession($).catch(() => undefined)
       await listThemes($).catch(() => undefined)
       showStatus($, await active($))
+    }
+    // an update installed while this session runs: one quiet line, open a new session (docs/AGGIORNAMENTI.md)
+    const homeDir = await homePath($).catch(() => undefined)
+    if (mine && isInstalledCopy(rootOf($)) && homeDir !== undefined) {
+      const look = updateWatcher({
+        running: manifestVersion(await readText($, joinPath(rootOf($), '.claude-plugin', 'plugin.json'))),
+        installed: () => readText($, joinPath(homeDir, '.claude', 'plugins', 'installed_plugins.json')),
+        say: async version => $.ui.toast(t(await read($, locale), 'engineUpdated', { version }), { timeoutMs: NOTICE_MS }),
+      })
+      await look().catch(() => undefined)
+      $.clock.every(UPDATE_POLL_MS, () => void look().catch(() => undefined))
     }
     let polls = 0
     $.clock.every(POLL_MS, () => {
@@ -2186,6 +2353,7 @@ export const register: Register = on => {
     const result = await next(e)
     if (!('deny' in result && result.deny !== undefined)) {
       await update($, appearance, () => appearanceOf(e.value) ?? null).catch(() => undefined)
+      await republishColors($)
     }
 
     return result
@@ -2307,7 +2475,7 @@ export const register: Register = on => {
     const meta = time ? { time, color: muted, before: true } : undefined
     const label =
       style.label &&
-      labelRow({ Box, Text, Svg }, { ...style, initial, labelRim: linesOn(theme), labelOutline: labelOutlineOf(theme) }, style.label, theme.motion !== false, { key: 'tinta-label', justifyContent: right ? 'flex-end' : 'flex-start' }, meta)
+      labelRow({ Box, Text, Svg }, { ...style, initial, labelRim: linesOn(theme), labelOutline: labelOutlineOf(theme), scale: scaleOf(theme).label }, style.label, theme.motion !== false, { key: 'tinta-label', justifyContent: right ? 'flex-end' : 'flex-start' }, scaleOf(theme).label.time ? meta : undefined)
 
     // On desktop the user's side mirrors Claude's: the row inside is the
     // app's own (its bubble at the right, a queued prompt's "Send now"),
@@ -2323,7 +2491,7 @@ export const register: Register = on => {
       const ink = style.accent ?? style.labelColor ?? theme.palette.accent ?? '#808080'
       const named = { ...style, initial, labelFill: { solid: ink }, labelChip: undefined, labelGlow: false, labelGlass: false, labelBold: theme.assistant?.labelBold ?? style.labelBold }
       const row = style.label
-        ? labelRow({ Box, Text, Svg }, { ...named, labelRim: linesOn(theme), labelOutline: labelOutlineOf(theme) }, style.label.toLocaleUpperCase(await read($, locale)), theme.motion !== false, { key: 'tinta-label', justifyContent: 'flex-end' }, meta)
+        ? labelRow({ Box, Text, Svg }, { ...named, labelRim: linesOn(theme), labelOutline: labelOutlineOf(theme), scale: scaleOf(theme).label }, style.label.toLocaleUpperCase(await read($, locale)), theme.motion !== false, { key: 'tinta-label', justifyContent: 'flex-end' }, scaleOf(theme).label.time ? meta : undefined)
         : undefined
       const spec = { width: theme.rule?.width ?? RULE_WIDTH, gap: theme.rule?.gap ?? REPLY_RULE_GAP }
       const cap = { width: spec.width, gap: 0, opacity: theme.rule?.opacity }
@@ -2437,9 +2605,12 @@ export const register: Register = on => {
             // twin-fill: a twin the layout sizes; an image prompt keeps the glow anchored at the row's foot
             if (style.stubMode === 'twin-fill' && !withImage) return userTwinArt({ Box, Svg, Text }, glowSpec, text, glowColumns, body)
 
-            // experiment glowExactWidth: a wrapped prompt's bubble is at its widest, 85% of the row: our own 85% Box
-            // clamps a wide drawing to exactly that (no column guess); blur, overshoot and offsets keep the plain glow
-            if (bubble.full && !withImage && glowSpec.blur === 0 && glowSpec.overshoot === 0 && (glowSpec.offsetX ?? 0) === 0 && (glowSpec.widthScale ?? 1) === 1 && theme.experiments?.glowExactWidth === true) {
+            // a bubble at its widest (a line it cannot break short of the edge: a classpath, a path, a long
+            // token pasted from a console), and under the experiment glowExactWidth any wrapped prompt: the app's
+            // bubble is 85% of the row, which the columns only estimate (a code font of another width moves them),
+            // so our own 85% Box clamps a wide drawing to exactly that; offsets and a width scale keep the plain glow
+            const atWidest = bubble.max === true || (bubble.full === true && theme.experiments?.glowExactWidth === true)
+            if (atWidest && !withImage && (glowSpec.offsetX ?? 0) === 0 && (glowSpec.widthScale ?? 1) === 1) {
               return exactGlowArt({ Box, Svg }, glowSpec, bubble, body)
             }
 
@@ -2493,7 +2664,10 @@ export const register: Register = on => {
     )
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+  on('ui.render', { component: 'AssistantMessage' }, async ($, raw, next) => {
+    // la riga parlata del volto non si mostra mai, neanche a meta' dello streaming
+    const spoken = withoutSpokenLine(raw.props.text)
+    const e = spoken === raw.props.text ? raw : { ...raw, props: { ...raw.props, text: spoken } }
     if (!(await drawsHere($))) {
       return next(e)
     }
@@ -2518,11 +2692,37 @@ export const register: Register = on => {
     const els = $.ui.resolve(e)
     const { Box, Markdown, Text } = els
     const Svg = e.surface === 'desktop' && 'Svg' in els ? els.Svg : undefined
+    // cio' che i plugin sotto aggiungono alla risposta (il pulsante Ascolta del volto): in fondo, a destra,
+    // in un Box fisso dopo tutto il resto, cosi' gli antenati delle animazioni dei titoli non cambiano
+    const beneath = e.surface === 'desktop' ? beneathOf(await next(e).catch(() => undefined)) : undefined
+    // the face's voice reading this reply (lettura.ts): its sentence tinted in the text, a mark at the reply's end
+    const reading = await read($, lettura).catch(() => undefined)
+    const heard = reading !== undefined && reading.mode !== 'spento' && isReading(e.props.text, reading) ? reading : undefined
+    // the sentence's tint drawn in some Markdown part below (else the mark stands in for it)
+    let tinted = false
+    const markArt = (): RenderElement | undefined => {
+      if (heard === undefined || !(showsMark(heard.mode) || (showsHighlight(heard.mode) && !tinted))) return undefined
+      if (!Svg) {
+        return (
+          <Box key="tinta-reading-mark" flexDirection="row">
+            <Text color={style.accent ?? theme.palette.accent}>{READING_MARK_TEXT}</Text>
+          </Box>
+        )
+      }
+      const mark = readingMarkDrawing(headingColors(theme), theme.motion !== false)
+
+      // an interactive frame the desktop keeps across redraws: its loop runs on, never restarting
+      return (
+        <Box key="tinta-reading-mark" flexDirection="row" alignItems="center">
+          <Svg source={steadyFrame(mark.source)} alt={READING_MARK_TEXT} width={mark.width} height={mark.height} isInteractive />
+        </Box>
+      )
+    }
     const hasLabel = e.props.isFirstOfReply && style.label !== undefined
     const time = hasLabel && e.surface === 'desktop' && showsTime(theme) ? await timeOf($, e.requestId) : undefined
     const label =
       hasLabel && style.label !== undefined
-        ? labelRow({ Box, Text, Svg }, { ...style, labelRim: linesOn(theme) }, e.surface === 'desktop' ? style.label.toLocaleUpperCase(await read($, locale)) : style.label, theme.motion !== false, {}, time ? { time, color: await timeInk($, theme, style.accent ?? style.labelColor, e.surface) } : undefined)
+        ? labelRow({ Box, Text, Svg }, { ...style, labelRim: linesOn(theme), scale: scaleOf(theme).label }, e.surface === 'desktop' ? style.label.toLocaleUpperCase(await read($, locale)) : style.label, theme.motion !== false, {}, time && scaleOf(theme).label.time ? { time, color: await timeInk($, theme, style.accent ?? style.labelColor, e.surface) } : undefined)
         : undefined
     const divider = Svg && e.props.isFirstOfReply && theme.divider?.show === true ? dividerDrawing(theme.divider.fill, Math.max(theme.divider.height, 2 * DIVIDER_ROOM + 2)) : undefined
     const dividerArt = Svg && divider && <Svg source={divider.source} alt="—" height={divider.height} />
@@ -2598,22 +2798,23 @@ export const register: Register = on => {
         }
       }
       const body = decodeArt ? [decodeArt] : parts.map((part, i) => {
-        if (part.kind === 'table') return tableArt({ Box, Text }, part, tableLook, cells, `tinta-table-${i}`)
+        if (part.kind === 'table') return tableArt({ Box, Text }, part, tableLook, cells, `tinta-table-${i}`, scaleOf(theme).space)
         if (part.kind === 'heading') {
           const words = headingText(part.text)
           // a template's heading effect (fx-headings.ts): its own Svg, the ink's left edge on the text's
           const effect = theme.hints?.headings?.effect as (typeof HEADING_EFFECTS)[number] | undefined
           // the last line of a reply still arriving may yet grow: the still words alone until its line ends (only the words' drawing changes, no effect restarts)
           const growing = turnRunning && i === parts.length - 1 && !e.props.text.endsWith('\n')
-          const fx = Svg && words !== '' && effect !== undefined && HEADING_EFFECTS.includes(effect) ? fxHeading({ text: words, level: part.level, width: roomPx(cells), colors: headingInk, effect, font: theme.hints?.headings?.font ?? displayKind(theme.typography?.display), motion: theme.motion !== false && !growing }) : undefined
+          const fx = Svg && words !== '' && effect !== undefined && HEADING_EFFECTS.includes(effect) ? fxHeading({ text: words, level: part.level, width: roomPx(cells), colors: headingInk, effect, font: theme.hints?.headings?.font ?? displayKind(theme.typography?.display), motion: theme.motion !== false && !growing, density: densityOfLook(theme) }) : undefined
           if (fx && Svg) {
-            const rhythm = HEADING_RHYTHM[part.level] ?? { top: 1, bottom: 0.25 }
+            const rhythm = rhythmAt(HEADING_RHYTHM[part.level] ?? { top: 1, bottom: 0.25 }, scaleOf(theme))
+            const ruleLine = scaleOf(theme).rule
 
             // a level 2 heading keeps its thin underline fading right (as the plain headings), unless the template drops it
             const ink = headingInk.length >= 2 ? headingInk : [headingInk[0] ?? '#A970FF', headingInk[0] ?? '#A970FF']
             const ruleW = part.level === 2 && theme.hints?.headings?.rule !== false ? Math.round(Math.max(8, fx.width - 2 * fx.inset) * HEADING_RULE_SHARE) : 0
             const fade = ink.map((hex, k) => `<stop offset="${(k / (ink.length - 1)).toFixed(2)}" stop-color="${hex}" stop-opacity="${(0.8 * (1 - k / (ink.length - 1))).toFixed(2)}"/>`).join('')
-            const rule = `<svg xmlns="http://www.w3.org/2000/svg" width="${ruleW}" height="2" viewBox="0 0 ${ruleW} 2"><defs><linearGradient id="hu" x1="0" y1="0" x2="1" y2="0">${fade}</linearGradient></defs><rect width="${ruleW}" height="1.5" rx="0.75" fill="url(#hu)"/></svg>`
+            const rule = `<svg xmlns="http://www.w3.org/2000/svg" width="${ruleW}" height="2" viewBox="0 0 ${ruleW} 2"><defs><linearGradient id="hu" x1="0" y1="0" x2="1" y2="0">${fade}</linearGradient></defs><rect width="${ruleW}" height="${ruleLine.height}" rx="${ruleLine.height / 2}" fill="url(#hu)"/></svg>`
 
             return (
               <Box key={`tinta-heading-${i}`} flexDirection="column" marginTop={Math.round(((i === 0 ? 0 : rhythm.top) - fx.top / MARGIN_UNIT_PX) * 100) / 100} marginBottom={ruleW > 0 ? rhythm.bottom : Math.round((rhythm.bottom - fx.top / MARGIN_UNIT_PX) * 100) / 100}>
@@ -2627,7 +2828,7 @@ export const register: Register = on => {
                   )}
                 </Box>
                 {ruleW > 0 && (
-                  <Box key="tinta-heading-rule" flexDirection="row" marginTop={Math.round(((5 - fx.top) / MARGIN_UNIT_PX) * 100) / 100}>
+                  <Box key="tinta-heading-rule" flexDirection="row" marginTop={Math.round(((ruleLine.gap - fx.top) / MARGIN_UNIT_PX) * 100) / 100}>
                     <Svg source={rule} alt="—" width={ruleW} height={2} />
                   </Box>
                 )}
@@ -2635,9 +2836,9 @@ export const register: Register = on => {
             )
           }
           // one that does not fit two lines, or has nothing to draw, is the app's Markdown
-          const art = Svg && words !== '' ? headingDrawing(words, part.level, headingInk, roomPx(cells - (head ? Math.max(1, Math.round(spec.gap / 10)) : 0)), theme.typography?.display) : undefined
+          const art = Svg && words !== '' ? headingDrawing(words, part.level, headingInk, roomPx(cells - (head ? Math.max(1, Math.round(spec.gap / 10)) : 0)), theme.typography?.display, scaleOf(theme)) : undefined
 
-          return art ? headingArt({ Box, Svg }, art, words, part.level, i === 0, `tinta-heading-${i}`) : <Markdown key={`tinta-md-${i}`} text={part.raw} />
+          return art ? headingArt({ Box, Svg }, art, words, part.level, i === 0, `tinta-heading-${i}`, scaleOf(theme)) : <Markdown key={`tinta-md-${i}`} text={part.raw} />
         }
         if (part.kind === 'code') {
           const source = codeSource(part.source)
@@ -2645,7 +2846,7 @@ export const register: Register = on => {
           return source.trim() === '' || source.length > CODE_MAX ? (
             <Markdown key={`tinta-md-${i}`} text={part.raw} />
           ) : (
-            codeArt({ Box, Svg, Text, Code: els.Code }, { ...part, source }, codeTone, i === 0, `tinta-code-${i}`)
+            codeArt({ Box, Svg, Text, Code: els.Code }, { ...part, source }, codeTone, i === 0, `tinta-code-${i}`, scaleOf(theme).space)
           )
         }
 
@@ -2653,8 +2854,19 @@ export const register: Register = on => {
         // into our drawing, and a triple click on a leaf's last paragraph followed by anything of ours (a heading, the
         // drop shadow) selected from the leaf's top instead; with a paragraph of the leaf's own next to it, the
         // selection stays on the clicked one (headless Chrome, scenes/tc.mjs)
+        // the sentence being heard: a soft tint under the app's own text, from the part's top, in a Box of no height
+        // (as the bubble's fill): it takes no room and moves nothing, whatever size the desktop draws it at (lettura.ts)
+        const span = Svg && heard && showsHighlight(heard.mode) ? findSpan(part.text, heard.text) : undefined
+        const tint = span ? highlightOverlay(part.text, span, roomPx(cells), style.accent ?? theme.palette.accent ?? '#A970FF') : undefined
+        if (tint) tinted = true
+
         return (
           <Box key={`tinta-md-box-${i}`} flexDirection="column">
+            {Svg && tint && (
+              <Box key={`tinta-reading-${i}`} flexDirection="row" height={0} flexShrink={0}>
+                <Svg source={tint.source} alt="" width={tint.width} height={tint.height} />
+              </Box>
+            )}
             <Markdown key={`tinta-md-${i}`} text={part.text} />
             {Svg && (
               <Box key={`tinta-select-stop-${i}`} flexDirection="column" marginBottom={-2}>
@@ -2664,6 +2876,15 @@ export const register: Register = on => {
           </Box>
         )
       })
+
+      const mark = markArt()
+      const endRow =
+        mark || beneath ? (
+          <Box key="tinta-reply-beneath" flexDirection="row" justifyContent="flex-end" alignItems="center" gap={1}>
+            {mark}
+            {beneath}
+          </Box>
+        ) : undefined
 
       return (
         <Box key="tinta-assistant" flexDirection="column" {...(style.background ? { backgroundColor: style.background } : {})}>
@@ -2710,6 +2931,7 @@ export const register: Register = on => {
                 : undefined}
             </Box>
           </Box>
+          {endRow}
         </Box>
       )
     }
@@ -2724,6 +2946,7 @@ export const register: Register = on => {
       >
         {label}
         <Markdown text={e.props.text} />
+        {markArt()}
       </Box>
     )
   }).catch(($, e, next) => next(e))
@@ -3067,9 +3290,16 @@ export const register: Register = on => {
     if (off && !style.showToggle) {
       return next(e)
     }
+    // i plugin sotto Tinta (non la fascia di serie, che Tinta sostituisce): in coda ai suoi bottoni
+    const beneath = beneathOf(await next(e))
 
     const els = $.ui.resolve(e)
     const { Box, Button, Text } = els
+    const below = beneath && (
+      <Box key="tinta-band-beneath" flexDirection="row" alignItems="center" flexShrink={1}>
+        {beneath}
+      </Box>
+    )
     const Svg = e.surface === 'desktop' && 'Svg' in els ? els.Svg : undefined
     const lang = await read($, locale)
     // on desktop the band says the theme's plain name; band.text stays the terminal's
@@ -3083,6 +3313,7 @@ export const register: Register = on => {
         <Box key="tinta-band" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
           <Text dimColor>{label}</Text>
           {toggle}
+          {below}
         </Box>
       )
     }
@@ -3143,7 +3374,7 @@ export const register: Register = on => {
       const timerOf = () => bandTimerDrawing(e.props.isWorking && began !== null ? clockText(clockNow - began) : undefined, muted)
       // what fits the band's width (its columns at the code font's ~7.6 px), the native buttons' room set aside: the
       // style's name goes first, then the timer, the limits and the context, so the row never overlaps or wraps
-      const buttonsPx = [busy > 0 ? `◷ ${busy}` : '', hasSounds ? `♪ ${t(lang, 'soundOff')}` : '', style.showToggle ? t(lang, 'themeOff') : ''].filter(Boolean).reduce((px, label) => px + label.length * 7.4 + 24, 0)
+      const buttonsPx = [busy > 0 ? `◷ ${busy}` : '', hasSounds ? `♪ ${t(lang, 'soundOff')}` : '', style.showToggle ? t(lang, 'themeOff') : ''].filter(Boolean).reduce((px, label) => px + label.length * 7.4 + 24, 0) + (beneath ? beneathPx(beneath) : 0)
       // the state's slot is never dropped: its room set aside first
       const status = state !== undefined && stateInk !== undefined && stateWord !== undefined ? bandStatusDrawing(state, stateWord, stateInk, Object.values(STATE_WORDS).map(key => t(lang, key))) : undefined
       const budget = room * 7.6 - buttonsPx - 40 - (status === undefined ? 0 : status.width + 16)
@@ -3186,6 +3417,7 @@ export const register: Register = on => {
               {busy > 0 && <Button key="tinta-attivita" label={`◷ ${busy}`} onPress={() => void openAttivita($)} />}
               {hasSounds && <Button key="tinta-sound" label={`♪ ${t(lang, silent ? 'soundOff' : 'soundOn')}`} {...(silent ? { dimColor: true } : {})} onPress={() => void toggleSounds($)} />}
               {toggle}
+              {below}
             </Box>
           </Box>
         </Box>
@@ -3275,6 +3507,7 @@ export const register: Register = on => {
             />
           )}
           {toggle}
+          {below}
         </Box>
       </Box>
     )
@@ -3320,7 +3553,9 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // The Attivita pane: Tinta's own view of the background work, in the theme
-  on('ui.render', { component: 'Pane', requestId: ATTIVITA }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: ATTIVITA }, async ($, e, next) => {
+    // cio' che disegna un plugin sotto (il volto, per esempio) va in cima, sopra l'elenco
+    const beneath = beneathOf(await next(e).catch(() => undefined))
     const els = $.ui.resolve(e)
     const { Box, Button, Text } = els
     const Svg = e.surface === 'desktop' && 'Svg' in els ? els.Svg : undefined
@@ -3334,6 +3569,11 @@ export const register: Register = on => {
     const done = list.filter(one => one.status !== 'running').sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
     const open = await read($, tasksDoneOpen)
     const clock = running.length > 0 ? await read($, tasksNow) : 0
+    // quelle in corso da oltre 12 ore stanno a parte, chiuse: quasi certamente nessuno le sta guardando
+    const nowAt = clock || (await $.clock.now().catch(() => 0))
+    const fresh = running.filter(one => nowAt - one.startedAt < TASK_STALE_MS)
+    const stale = running.filter(one => nowAt - one.startedAt >= TASK_STALE_MS)
+    const staleOpen = await read($, tasksStaleOpen)
     const lang = await read($, locale)
     const KIND_WORDS: { [kind in TaskKind]: string } = { agent: t(lang, 'kindAgent'), shell: t(lang, 'kindShell'), monitor: t(lang, 'kindMonitor'), workflow: t(lang, 'kindWorkflow') }
     const END_WORDS = { done: t(lang, 'endDone'), failed: t(lang, 'endFailed'), stopped: t(lang, 'endStopped') } as const
@@ -3355,16 +3595,20 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const runningRow = (task: Task) => (
-      <Box key={`run-${task.id}`} flexDirection="row" alignItems="center" gap={1}>
+    // righe ben separate: fondo alterno appena visibile, il titolo prende lo spazio (fino a due righe),
+    // tempo e Ferma piccoli a destra, le icone in colonna
+    const rowFill = (i: number) => (i % 2 === 1 ? mix(theme?.palette.surface ?? '#202020', theme?.palette.text ?? '#ffffff', 0.05) : undefined)
+    const titleOf = (title: string) => (title.length > 90 ? `${title.slice(0, 89)}…` : title)
+    const runningRow = (task: Task, i: number) => (
+      <Box key={`run-${task.id}`} flexDirection="row" alignItems="flex-start" gap={1} paddingX={1} paddingY="xs" {...(rowFill(i) ? { backgroundColor: rowFill(i) } : {})}>
         {chip(TASK_ICONS[task.kind], accent, KIND_WORDS[task.kind])}
         <Box key="title" flexGrow={1} flexShrink={1} minWidth={0}>
-          <Text wrap="truncate-end">{task.title}</Text>
+          <Text wrap="wrap">{titleOf(task.title)}</Text>
         </Box>
-        <Box key="time" flexShrink={0}>
-          <Text color={muted}>{elapsedOf(Math.max(clock, task.startedAt) - task.startedAt)}</Text>
+        <Box key="side" flexDirection="column" alignItems="flex-end" flexShrink={0}>
+          <Text color={muted} size="footnote">{elapsedOf(Math.max(clock, task.startedAt) - task.startedAt)}</Text>
+          <Button key={`stop-${task.id}`} plain label={t(lang, 'stop')} onPress={() => void stopTask($, task.id)} />
         </Box>
-        <Button key={`stop-${task.id}`} label={t(lang, 'stop')} onPress={() => void stopTask($, task.id)} />
       </Box>
     )
     const doneRow = (task: Task) => {
@@ -3372,13 +3616,13 @@ export const register: Register = on => {
       const kind = task.status === 'done' ? 'result' : task.status === 'failed' ? 'warning' : 'stopped'
 
       return (
-        <Box key={`end-${task.id}`} flexDirection="row" alignItems="center" gap={1}>
-          {chip(Svg ? kind : task.status, ink, END_WORDS[task.status as keyof typeof END_WORDS] ?? task.status)}
+        <Box key={`end-${task.id}`} flexDirection="row" alignItems="center" gap={1} paddingX={1} paddingY="xs">
+          {chip(Svg ? kind : task.status, ink, task.orphaned ? t(lang, 'endOrphaned') : (END_WORDS[task.status as keyof typeof END_WORDS] ?? task.status))}
           <Box key="title" flexGrow={1} flexShrink={1} minWidth={0}>
             <Text wrap="truncate-end" color={muted}>{task.title}</Text>
           </Box>
           <Box key="time" flexShrink={0}>
-            <Text color={muted}>{elapsedOf((task.endedAt ?? task.startedAt) - task.startedAt)}</Text>
+            <Text color={muted} size="footnote">{task.orphaned ? t(lang, 'endOrphaned') : elapsedOf((task.endedAt ?? task.startedAt) - task.startedAt)}</Text>
           </Box>
         </Box>
       )
@@ -3386,18 +3630,27 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
+        {beneath && (
+          <Box key="tinta-attivita-beneath" flexDirection="column" width="100%">
+            {beneath}
+          </Box>
+        )}
         <Box key="head" flexDirection="row" alignItems="center" gap={1}>
           <Text color={accent} bold>
             {t(lang, 'activity')}
           </Text>
-          <Text color={muted}>{running.length > 0 ? t(lang, 'runningCount', { n: running.length }) : t(lang, 'noneRunning')}</Text>
+          <Text color={muted}>{fresh.length > 0 ? t(lang, 'runningCount', { n: fresh.length }) : t(lang, 'noneRunning')}</Text>
         </Box>
         <Box key="running" flexDirection="column" gap={0}>
           <Text color={muted} bold>
             {t(lang, 'running')}
           </Text>
-          {running.length === 0 && <Text color={muted}>{t(lang, 'nothingBackground')}</Text>}
-          {running.map(runningRow)}
+          {fresh.length === 0 && <Text color={muted}>{t(lang, 'nothingBackground')}</Text>}
+          {fresh.map(runningRow)}
+          {stale.length > 0 && (
+            <Button key="tinta-stale-toggle" plain label={`${staleOpen ? '▾' : '▸'} ${t(lang, 'staleTasks')} (${stale.length})`} onPress={() => void update($, tasksStaleOpen, value => !value)} />
+          )}
+          {staleOpen && stale.map((task, i) => runningRow(task, i + 1))}
         </Box>
         <Box key="done" flexDirection="column" gap={0}>
           <Box key="done-head" flexDirection="row" alignItems="center" justifyContent="space-between" gap={1}>
@@ -3429,4 +3682,7 @@ export const register: Register = on => {
       </Box>
     )
   })
+
+  // the face and its voice (hooks/volto, docs/VOCE.md): Tinta Pro only (volto/pro.ts), beneath every hook above
+  registerVolto(on)
 }

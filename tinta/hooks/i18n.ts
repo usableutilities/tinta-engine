@@ -91,6 +91,8 @@ export const STRINGS = {
   finished: { it: 'Terminate', en: 'Finished', es: 'Terminadas', fr: 'Terminées', de: 'Beendet', pt: 'Concluídas' },
   clear: { it: 'Svuota', en: 'Clear', es: 'Vaciar', fr: 'Vider', de: 'Leeren', pt: 'Limpar' },
   stop: { it: 'Ferma', en: 'Stop', es: 'Detener', fr: 'Arrêter', de: 'Stoppen', pt: 'Parar' },
+  endOrphaned: { it: 'non più attiva', en: 'no longer running', es: 'ya no activa', fr: 'plus active', de: 'nicht mehr aktiv', pt: 'já não ativa' },
+  staleTasks: { it: 'Vecchie', en: 'Old', es: 'Antiguas', fr: 'Anciennes', de: 'Alt', pt: 'Antigas' },
   kindAgent: { it: 'agente', en: 'agent', es: 'agente', fr: 'agent', de: 'Agent', pt: 'agente' },
   kindShell: { it: 'comando', en: 'command', es: 'comando', fr: 'commande', de: 'Befehl', pt: 'comando' },
   kindMonitor: { it: 'monitor', en: 'monitor', es: 'monitor', fr: 'moniteur', de: 'Monitor', pt: 'monitor' },
@@ -111,6 +113,7 @@ export const STRINGS = {
   pickerTitle: { it: 'Tinta · temi', en: 'Tinta · themes', es: 'Tinta · temas', fr: 'Tinta · thèmes', de: 'Tinta · Designs', pt: 'Tinta · temas' },
   noThemes: { it: 'Nessun tema in ~/.claude/tinta/themes/*.json', en: 'No themes in ~/.claude/tinta/themes/*.json', es: 'Ningún tema en ~/.claude/tinta/themes/*.json', fr: 'Aucun thème dans ~/.claude/tinta/themes/*.json', de: 'Keine Designs in ~/.claude/tinta/themes/*.json', pt: 'Nenhum tema em ~/.claude/tinta/themes/*.json' },
   badTheme: { it: 'Tinta: {file} non è un tema valido', en: 'Tinta: {file} is not a valid theme', es: 'Tinta: {file} no es un tema válido', fr: "Tinta : {file} n'est pas un thème valide", de: 'Tinta: {file} ist kein gültiges Design', pt: 'Tinta: {file} não é um tema válido' },
+  engineUpdated: { it: 'Tinta si è aggiornato ({version}): apri una nuova sessione per usarlo', en: 'Tinta was updated ({version}): open a new session to use it', es: 'Tinta se ha actualizado ({version}): abre una nueva sesión para usarlo', fr: 'Tinta a été mis à jour ({version}) : ouvrez une nouvelle session pour l’utiliser', de: 'Tinta wurde aktualisiert ({version}): Öffne eine neue Sitzung, um es zu nutzen', pt: 'O Tinta foi atualizado ({version}): abra uma nova sessão para usá-lo' },
 } satisfies { [key: string]: Row }
 
 export type StringKey = keyof typeof STRINGS

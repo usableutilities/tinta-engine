@@ -82,6 +82,39 @@ export type TintaAssistantAvatar = 'claude' | 'spark' | 'drop' | 'orb' | 'none'
 
 export type TintaBorderStyle = 'single' | 'round' | 'double' | 'bold' | 'classic' | 'none'
 
+/** The face's mood (hooks/volto): what the session is doing, as the face shows it. */
+export type TintaVoltoMood = 'idle' | 'listening' | 'thinking' | 'working' | 'talking' | 'waiting' | 'happy' | 'worried'
+
+/** The face's mood now and the one it comes from. */
+export type TintaVoltoFace = { mood: TintaVoltoMood; prev: TintaVoltoMood }
+
+/** The face's character, chosen in the Tinta app. */
+export type TintaVoltoWho = 'astratto' | 'volpe' | 'robot' | 'umano' | 'fosforo' | 'ai'
+
+/** The voice: on or off, and what speaks (the Tinta app's choices, comando.json). */
+export type TintaVoltoVoice = {
+  on: boolean
+  /** the system voice chosen (absent: by language) */
+  voice?: string
+  /** who speaks: the shared voice (the Tinta app, or a developer's helper) or the system's speech */
+  engine?: 'kokoro' | 'sistema'
+  /** the shared voice's id (absent: by language) */
+  kokoro?: string
+  /** 0.85, 1, 1.2, 1.4 (absent: 1) */
+  speed?: number
+  /** the person's language (it, en-us, en-gb, fr, es, pt, ja, zh, hi): never guessed */
+  lang?: string
+}
+
+/** Where the face sits: in the Attività pane or in a pane of its own. */
+export type TintaVoltoPlace = 'attivita' | 'separato'
+
+/** The active theme's colours, read outside the drawing. */
+export type TintaVoltoLook = { surface: string; accent: string; text: string; ink: string; muted: string; accent2?: string; mode?: 'dark' | 'light'; themeId?: string }
+
+/** An installed system voice. */
+export type TintaVoltoSystemVoice = { name: string; locale: string }
+
 declare module 'claude-code' {
   interface PluginState {
     tinta: {
@@ -137,11 +170,15 @@ declare module 'claude-code' {
         status: 'running' | 'done' | 'failed' | 'stopped'
         /** The tool call that started it, when known. */
         toolUseId?: string
+        /** Ended by Tinta because its process is gone (a restart, a resumed session). */
+        orphaned?: true
       }[]
       /** The Attività pane's clock: bumped each second while a task runs. */
       tasksNow: number
       /** Whether the pane's "Terminate" section is open (closed by default). */
       tasksDoneOpen: boolean
+      /** Whether the pane's "Vecchie" section (running for over 12 hours) is open (closed by default). */
+      tasksStaleOpen: boolean
       /** The session's plan (TodoWrite's list, or the Task tools'): each item's id and status, for the band's "3/7". */
       plan: { id: string; status: string }[]
       /** The running turn's tool calls and the files they wrote, for its closing line (experiment turnFooter). */
@@ -153,6 +190,24 @@ declare module 'claude-code' {
       waiting: boolean
       /** The main turn's last phase: working while it runs, done or failed once it ended, idle before any or after a stop. */
       phase: 'idle' | 'working' | 'done' | 'failed'
+      /** The face (hooks/volto, Tinta Pro): its mood, character, voice and place; none of it is read without Pro. */
+      voltoFace: Shaped<TintaVoltoFace>
+      voltoWho: Shaped<TintaVoltoWho>
+      voltoVoce: Shaped<TintaVoltoVoice>
+      voltoVoices: Shaped<TintaVoltoSystemVoice[]>
+      voltoLook: Shaped<TintaVoltoLook>
+      /** Whether a shared voice speaks for the face: the Tinta app (or a developer's helper). */
+      voltoKokoro: Shaped<boolean>
+      voltoDove: Shaped<TintaVoltoPlace>
+      voltoGear: Shaped<boolean>
+      /** The playing voice's level (0 none, 1 lips closed between pieces): the mouth follows it. */
+      voltoLevel: Shaped<number>
+      /** The finished replies (normalised text, the last 30): only under them the Listen button. */
+      voltoFinals: Shaped<string[]>
+      /** The reply being listened to by hand ('' none). */
+      voltoAscolto: Shaped<string>
+      /** The sentence the voice reads now (its raw Markdown, '' none) and how the reply shows it (hooks/lettura.ts). */
+      voltoLettura: Shaped<{ text: string; mode: 'segno' | 'evidenza' | 'entrambi' | 'spento' }>
     }
   }
 }
@@ -375,6 +430,8 @@ export type TintaLook = {
     /** A wrapped prompt's line breaks decided by Tinta and handed to the app's row (stored message untouched), so the glow's lines are the app's. */
     userBreaks?: boolean
   }
+  /** Set by the engine from preferenze.json `density` (hooks/densita.ts), never by a theme file: `compact` draws Tinta's own parts with less room. */
+  density?: 'normal' | 'compact'
   /**
    * The design system's per-style wishes (docs/DESIGN-SYSTEM.md, `styleHints`
    * in the v2 templates), read by the engine: see THEME-FORMAT.md.

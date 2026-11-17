@@ -276,7 +276,53 @@ export const promptBlocks = (text: string): { quote: boolean; lines: string[] }[
     .filter(block => block.lines.some(line => line.trim() !== ''))
 }
 
-export const userBubbleSize = (text: string, columns: number, attached = false): { width: number; height: number; lines: number; full?: true; collapsed?: true } => {
+/** The tab stop of the app's pre-wrap text (CSS tab-size 8): eight of the font's spaces. */
+export const TAB_SPACES = 8
+
+/**
+ * A prompt's text as the browser lays it out, for measuring only: text pasted
+ * from a terminal or a run console carries CR line ends, ANSI colour codes,
+ * tabs and unusual spaces. A CRLF is one line break and a lone CR draws
+ * nothing; C0 controls (an ANSI code's ESC) draw nothing, their printable
+ * rest ("[31m") stays; a tab advances to the next stop of TAB_SPACES spaces;
+ * the breaking spaces of other widths break as a space; zero-width joiners
+ * and the BOM draw nothing. A no-break space stays: it binds its neighbours.
+ */
+export const measuredText = (text: string): string =>
+  text
+    .replace(/\r\n?/g, match => (match === '\r\n' ? '\n' : ''))
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+    .replace(/[\u2000-\u2006\u2008-\u200B\u205F\u3000]/g, ' ')
+    .replace(/[\u200C\u200D\u2060\uFEFF]/g, '')
+    .split('\n')
+    .map(line => {
+      if (!line.includes('\t')) return line
+      const space = textPx(' ')
+      const stop = TAB_SPACES * space
+      let out = ''
+      for (const part of line.split(/(\t)/)) {
+        if (part !== '\t') {
+          out += part
+          continue
+        }
+        const at = textPx(out)
+        const next = (Math.floor(at / stop + 1e-6) + 1) * stop
+        out += ' '.repeat(Math.max(1, Math.round((next - at) / space)))
+      }
+
+      return out
+    })
+    .join('\n')
+
+/**
+ * `max`: the bubble at its widest, GLOW_BUBBLE_SHARE of the row: a line the
+ * app cannot break short of it (a classpath, a path, a long token) fills it,
+ * so its ShrinkWrap has nothing to take back. Its width then is the row's,
+ * which the columns only estimate: the caller lets the layout take it.
+ */
+export const userBubbleSize = (raw: string, columns: number, attached = false): { width: number; height: number; lines: number; full?: true; collapsed?: true; max?: true } => {
+  const text = measuredText(raw)
   const widest = bubbleWidest(columns)
   const inner = Math.max(40, widest - 2 * GLOW_PAD.x)
   const indent = QUOTE.rule + QUOTE.pad
@@ -302,10 +348,12 @@ export const userBubbleSize = (text: string, columns: number, attached = false):
   // the words' own width (fractional, as the browser lays it out) plus the padding
   // wrapped: the widest laid-out line, rounded up as the app's ShrinkWrap does, plus the padding
   const width = longest > inner ? Math.min(widest, Math.ceil(widestLine) + GLOW_WIDTH_PAD) : Math.min(widest, longest + GLOW_WIDTH_PAD)
-  const folded = isCollapsed(text)
+  // folded as the app counts it: the text as stored, every character
+  const folded = isCollapsed(raw)
   const height = count * GLOW_LINE_PX + Math.max(0, blocks.length - 1) * QUOTE.gap + 2 * GLOW_PAD.y
+  const max = longest > inner && width >= widest
 
-  return { width: Math.round(width * 100) / 100, height: folded ? COLLAPSED_PX : Math.round(height), lines: count, ...(longest > inner ? { full: true } : {}), ...(folded ? { collapsed: true } : {}) }
+  return { width: Math.round(width * 100) / 100, height: folded ? COLLAPSED_PX : Math.round(height), lines: count, ...(longest > inner ? { full: true } : {}), ...(folded ? { collapsed: true } : {}), ...(max ? { max: true } : {}) }
 }
 
 export type GlowSpec = { fill: TintaFill; opacity: number; blur: number; overshoot: number; offsetY?: number; offsetX?: number; widthScale?: number; mesh?: readonly string[]; meshBase?: string; meshBaseAlpha?: number; anchor?: 'top' | 'bottom'; stroke?: { color: string; alpha: number; width: number }; noFill?: true }
@@ -511,57 +559,86 @@ export const EXACT_WIDE = 2400
 export const EXACT_CAP = GLOW_RADIUS
 
 /**
- * glowExactWidth: the glow of a bubble at its widest (its words wrap), as
- * wide as the app's own, exactly, whatever the columns say. The desktop
- * draws an Svg as an image of its width prop with max-width 100%: in our
- * own Box of GLOW_BUBBLE_SHARE of the row (the same row the app's bubble
+ * The glow of a bubble at its widest, as wide as the app's own, exactly,
+ * whatever the columns say: a bubble whose line fills it (`max`, a long
+ * token), and, under the experiment glowExactWidth, any wrapped prompt. The
+ * desktop draws an Svg as an image of its width prop with max-width 100%: in
+ * our own Box of GLOW_BUBBLE_SHARE of the row (the same row the app's bubble
  * takes its 85% of), a drawing EXACT_WIDE px wide is clamped to it. The
- * corners stay round at their px: a left cap EXACT_CAP px wide holds the
- * left corners, and the rest is one wide drawing shown from its right end
+ * corners stay round at their px: a left cap holds the left corners (and the
+ * overshoot and fade past the bubble's left edge, hung left of the Box by a
+ * negative margin), and the rest is one wide drawing shown from its right end
  * (preserveAspectRatio xMaxYMid slice: drawn 1:1, its left part cut), which
- * holds the right corners. Both are cut from one mesh laid on the
- * estimated width, so it runs on across the seam (an error in the estimate
- * moves the soft blobs a few px, never an edge). Height as the plain glow;
- * blur and overshoot are not drawn here (the caller keeps the plain glow
- * for them).
+ * holds the right corners. Both are cut from one canvas, the bubble's right
+ * edge at EXACT_WIDE and its estimated left edge at EXACT_WIDE − width: the
+ * fill, mesh, blur and ring run on across the seam (an error in the estimate
+ * moves the soft blobs a few px, never an edge). The shape as the plain
+ * glow's: `overshoot` past the bubble's left, top and bottom, its right end
+ * a blur inside the row's edge, GLOW_FADE blurs of room round it.
  */
-export const exactGlowDrawings = (spec: GlowSpec, bubble: { width: number; height: number }): { cap: string; wide: string; height: number } => {
+export const exactGlowDrawings = (spec: GlowSpec, bubble: { width: number; height: number }): { cap: string; wide: string; height: number; capWidth: number; hang: number; inset: number } => {
+  const o = Math.max(0, spec.overshoot)
+  const b = Math.max(0, spec.blur)
+  const fade = Math.ceil(GLOW_FADE * b)
   const h = Math.round(bubble.height)
   const w = Math.round(bubble.width)
-  const r = Math.min(GLOW_RADIUS, h / 2)
+  const shapeH = h + 2 * o
+  const height = shapeH + 2 * fade
+  const r = Math.min(GLOW_RADIUS + o, shapeH / 2)
+  // the bubble's estimated left edge on the canvas, and the shape's
   const left = EXACT_WIDE - w
-  const paintOf = (id: string) => {
+  const shapeX = left - o
+  const right = EXACT_WIDE - b
+  // the cap: the fade and overshoot hung left of the Box, the corners and (blurred) the blur's reach inside it
+  const hang = fade + o
+  const capWidth = hang + Math.max(EXACT_CAP, Math.ceil(r - o)) + fade
+  const capX = shapeX - fade
+  const stroke = spec.stroke
+  const ring = (x: number, width: number) =>
+    stroke
+      ? `<rect x="${x + stroke.width / 2}" y="${fade + stroke.width / 2}" width="${Math.max(1, width - stroke.width)}" height="${Math.max(1, shapeH - stroke.width)}" rx="${Math.max(0, r - stroke.width / 2)}" fill="none" stroke="${stroke.color}" stroke-opacity="${stroke.alpha}" stroke-width="${stroke.width}"/>`
+      : ''
+  const piece = (id: string, x: number, width: number) => {
+    const filter = b > 0 ? `<filter id="${id}-blur" filterUnits="userSpaceOnUse" x="${-EXACT_WIDE}" y="0" width="${3 * EXACT_WIDE}" height="${height}"><feGaussianBlur stdDeviation="${b}"/></filter>` : ''
+    const blurred = b > 0 ? ` filter="url(#${id}-blur)"` : ''
+    if (spec.noFill) return { defs: '', body: ring(x, width) }
     if (spec.mesh !== undefined) {
-      const blobs = meshPaint(left, 0, w, h, spec.mesh, USER_MESH_LOOK.scale, id)
+      const blobs = meshPaint(shapeX, fade, right - shapeX, shapeH, spec.mesh, USER_MESH_LOOK.scale, id)
 
-      return { defs: blobs.defs, body: `<rect x="0" y="0" width="${EXACT_WIDE}" height="${h}" fill="${USER_MESH_LOOK.base}" fill-opacity="${USER_MESH_LOOK.baseAlpha}"/>${blobs.body}` }
+      return {
+        defs: `<clipPath id="${id}-clip"><rect x="${x}" y="${fade}" width="${width}" height="${shapeH}" rx="${r}"/></clipPath>${blobs.defs}${filter}`,
+        body: `<g clip-path="url(#${id}-clip)" opacity="${spec.opacity}"${blurred}><rect x="${x}" y="${fade}" width="${width}" height="${shapeH}" fill="${spec.meshBase ?? USER_MESH_LOOK.base}" fill-opacity="${spec.meshBaseAlpha ?? USER_MESH_LOOK.baseAlpha}"/>${blobs.body}</g>${ring(x, width)}`,
+      }
     }
     const { defs, ref } = paint(spec.fill, `${id}-fill`, false)
 
-    return { defs, body: `<rect x="0" y="0" width="${EXACT_WIDE}" height="${h}" fill="${ref}"/>` }
+    return {
+      defs: `<clipPath id="${id}-clip"><rect x="${x}" y="${fade}" width="${width}" height="${shapeH}" rx="${r}"/></clipPath>${defs}${filter}`,
+      body: `<g clip-path="url(#${id}-clip)" opacity="${spec.opacity}"${blurred}><rect x="${x}" y="${fade}" width="${width}" height="${shapeH}" fill="${ref}"/></g>${ring(x, width)}`,
+    }
   }
-  const one = paintOf('tinta-exact-wide')
-  const two = paintOf('tinta-exact-cap')
-  // the wide piece: right corners round, the left side runs off past the cap's seam
+  // the wide piece: right corners round, the left side runs off well past the cap's seam (and the blur's reach)
+  const offLeft = -(2 * r + fade)
+  const one = piece('tinta-exact-wide', offLeft, right - offLeft)
+  // the cap: the shape's true left end, its right side running off past the seam
+  const two = piece('tinta-exact-cap', shapeX, capWidth + 2 * r + fade)
   const wide =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${EXACT_WIDE}" height="${h}" viewBox="0 0 ${EXACT_WIDE} ${h}" preserveAspectRatio="xMaxYMid slice">` +
-    `<defs><clipPath id="tinta-exact-wide-clip"><rect x="${-2 * r}" y="0" width="${EXACT_WIDE + 2 * r}" height="${h}" rx="${r}"/></clipPath>${one.defs}</defs>` +
-    `<g clip-path="url(#tinta-exact-wide-clip)" opacity="${spec.opacity}">${one.body}</g></svg>`
-  // the cap: the same mesh at the estimated left edge, left corners round
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${EXACT_WIDE}" height="${height}" viewBox="0 0 ${EXACT_WIDE} ${height}" preserveAspectRatio="xMaxYMid slice">` +
+    `<defs>${one.defs}</defs>${one.body}</svg>`
   const cap =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${EXACT_CAP}" height="${h}" viewBox="${left} 0 ${EXACT_CAP} ${h}">` +
-    `<defs><clipPath id="tinta-exact-cap-clip"><rect x="${left}" y="0" width="${EXACT_CAP + 2 * r}" height="${h}" rx="${r}"/></clipPath>${two.defs}</defs>` +
-    `<g clip-path="url(#tinta-exact-cap-clip)" opacity="${spec.opacity}">${two.body}</g></svg>`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${capWidth}" height="${height}" viewBox="${capX} 0 ${capWidth} ${height}">` +
+    `<defs>${two.defs}</defs>${two.body}</svg>`
 
-  return { cap, wide, height: h }
+  return { cap, wide, height, capWidth, hang, inset: fade + o }
 }
 
 /**
- * glowExactWidth's layout: the glow Box as userGlowArt's (right-aligned, the
- * row pulled up over it by the height), holding our own Box of
- * GLOW_BUBBLE_SHARE of the row: the cap, then a Box that grows into the
- * rest (min width 0, overflow hidden) with the wide drawing, clamped by it.
- * No engine node under any of these Boxes.
+ * The exact glow's layout: the glow Box as userGlowArt's (right-aligned, the
+ * row pulled up over it so its bubble's top lies `inset` below the drawing's
+ * top), holding our own Box of GLOW_BUBBLE_SHARE of the row: the cap, hung
+ * left of it by the fade and overshoot, then a Box that grows into the rest
+ * (min width 0, overflow hidden) with the wide drawing, clamped by it. No
+ * engine node under any of these Boxes.
  */
 export const exactGlowArt = (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -573,20 +650,28 @@ export const exactGlowArt = (
   const { Box, Svg } = els
   const art = exactGlowDrawings(spec, bubble)
   const units = (px: number) => Math.round((px / GLOW_MARGIN_PX) * 100) / 100
+  const across = (px: number) => Math.round((px / GLOW_UNIT_PX) * 100) / 100
 
   return [
     // the glow Box is the native row's sibling in one column, no padding of ours: its 85% is of the same width
     <Box key="tinta-user-glow" flexDirection="row" flexShrink={0} overflow="hidden">
       <Box key="tinta-user-glow-room" flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} justifyContent="flex-end">
         <Box key="tinta-user-glow-exact" width={`${GLOW_BUBBLE_SHARE * 100}%`} flexDirection="row" flexShrink={0}>
-          {Svg && <Svg source={art.cap} alt="Tu" width={EXACT_CAP} height={art.height} />}
+          {Svg &&
+            (art.hang > 0 ? (
+              <Box key="tinta-user-glow-cap" flexDirection="row" flexShrink={0} marginLeft={-across(art.hang)}>
+                <Svg source={art.cap} alt="Tu" width={art.capWidth} height={art.height} />
+              </Box>
+            ) : (
+              <Svg source={art.cap} alt="Tu" width={art.capWidth} height={art.height} />
+            ))}
           <Box key="tinta-user-glow-rest" flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" justifyContent="flex-end">
             {Svg && <Svg source={art.wide} alt="Tu" width={EXACT_WIDE} height={art.height} />}
           </Box>
         </Box>
       </Box>
     </Box>,
-    <Box key="tinta-user-native" flexDirection="column" marginTop={-units(art.height + (spec.offsetY ?? 0))}>
+    <Box key="tinta-user-native" flexDirection="column" marginTop={-units(art.height - art.inset + (spec.offsetY ?? 0))}>
       {native}
     </Box>,
   ]

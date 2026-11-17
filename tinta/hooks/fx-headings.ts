@@ -1,5 +1,7 @@
 import { MONO, glyphAt, hash } from './fx-decode'
-import { APP_FONT, HEADING_CSS_PX, HEADING_LINE, HEADING_LINES_MAX, headingPx } from './reply'
+import { DENSITY } from './densita'
+import type { Density } from './densita'
+import { APP_FONT, HEADING_CSS_PX, HEADING_LINE, headingPx } from './reply'
 import { escapeXml } from './svg'
 import { mix } from './theme'
 
@@ -28,6 +30,8 @@ export type HeadingInput = {
   effect: HeadingEffect
   font?: HeadingFont
   motion: boolean
+  /** The person's density (densita.ts): the heading's size from its row; normal when absent. */
+  density?: Density
 }
 /** A heading's Svg, still, and its effect's loop to lay over it: `inset`/`top` the empty room left of and above the first ink (glows and sparkles need it), `lines` as wrapped. */
 export type HeadingDrawing = { source: string; loop?: string; width: number; height: number; inset: number; top: number; lines: string[] }
@@ -64,22 +68,41 @@ const SPLINE = '0.45 0 0.55 1'
 export const effectPx = (text: string, size: number, font: HeadingFont): number =>
   font === 'mono' ? [...text].length * 0.6 * size * 1.02 : font === 'serif' ? headingPx(text, size) * 0.98 : headingPx(text, size)
 
-/** `text` in lines of at most `room` px; undefined when it needs more than HEADING_LINES_MAX or a word alone is wider. */
-const wrap = (text: string, size: number, font: HeadingFont, room: number): string[] | undefined => {
+/** The most lines an effect heading wraps to; a longer one is left to the app's Markdown, which wraps it itself. */
+export const FX_LINES_MAX = 4
+
+/** `word` cut into pieces of at most `room` px each (a token wider than the line: a path, a URL). */
+const pieces = (word: string, size: number, font: HeadingFont, room: number): string[] => {
+  const out: string[] = []
+  let piece = ''
+  for (const ch of word) {
+    if (piece !== '' && effectPx(piece + ch, size, font) > room) {
+      out.push(piece)
+      piece = ch
+    } else piece += ch
+  }
+  if (piece !== '') out.push(piece)
+
+  return out
+}
+
+/** `text` in lines of at most `room` px, a word wider than the line cut in pieces; undefined when it needs more than FX_LINES_MAX. */
+export const fxLines = (text: string, size: number, font: HeadingFont, room: number): string[] | undefined => {
   const lines: string[] = []
   let line = ''
   for (const word of text.split(/\s+/).filter(Boolean)) {
-    if (effectPx(word, size, font) > room) return undefined
-    const next = line === '' ? word : `${line} ${word}`
-    if (effectPx(next, size, font) <= room) line = next
-    else {
-      lines.push(line)
-      line = word
+    for (const piece of effectPx(word, size, font) > room ? pieces(word, size, font, room) : [word]) {
+      const next = line === '' ? piece : `${line} ${piece}`
+      if (effectPx(next, size, font) <= room) line = next
+      else {
+        if (line !== '') lines.push(line)
+        line = piece
+      }
     }
   }
   if (line !== '') lines.push(line)
 
-  return lines.length === 0 || lines.length > HEADING_LINES_MAX ? undefined : lines
+  return lines.length === 0 || lines.length > FX_LINES_MAX ? undefined : lines
 }
 
 const stopsOf = (colors: readonly string[], opacity?: (i: number) => number): string =>
@@ -94,21 +117,23 @@ const sparkle = (x: number, y: number, r: number): string => {
 
 /**
  * A heading `level` 1 to 3 with `effect`, wrapped to `width` px (at most
- * HEADING_LINES_MAX lines, else undefined: the app's Markdown draws it).
+ * FX_LINES_MAX lines, else undefined: the app's Markdown draws it). Never
+ * wider than `width`: every line is measured to fit, ink and room included.
  */
 export const headingDrawing = (input: HeadingInput): HeadingDrawing | undefined => {
   const font = input.font ?? 'sans'
   const family = escapeXml(HEADING_FONTS[font])
-  const size = HEADING_CSS_PX[input.level] ?? 17
+  const size = DENSITY[input.density ?? 'normal'].heading[input.level] ?? HEADING_CSS_PX[input.level] ?? 17
   const [px, py] = ROOM[input.effect]
-  const lines = wrap(input.text, size, font, input.width - 2 * px - 4)
+  // the line's room with the ink's own margin (4% and 4 px, as inkW below) inside it: the drawing never needs more than `width`
+  const lines = fxLines(input.text, size, font, (Math.floor(input.width) - 2 * px - 5) / 1.04)
   if (lines === undefined) return undefined
   const colors = (input.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)).length > 0 ? input.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)) : EFFECT_COLORS[input.effect]).map(c => c.toUpperCase())
   const first = colors[0] as string
   const pitch = Math.round(size * HEADING_LINE)
   const widest = Math.max(...lines.map(line => effectPx(line, size, font)))
   const inkW = Math.ceil(widest * 1.04 + 4)
-  const width = Math.min(Math.ceil(input.width), inkW + 2 * px)
+  const width = Math.min(Math.floor(input.width), inkW + 2 * px)
   const height = pitch * lines.length + 2 * py
   const baseline = (i: number) => r2(py + i * pitch + (pitch - size) / 2 + size * 0.8)
   const textAttrs = `font-family="${family}" font-size="${size}" font-weight="700"`

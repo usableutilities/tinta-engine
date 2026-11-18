@@ -190,4 +190,4 @@ export const bandStatusDrawing = (state: SessionState, word: string, ink: string
 }
 
 /** The state's glyph where only text is drawn (the terminal's band): the same four shapes. */
-export const STATUS_GLYPHS: { [state in SessionState]: string } = { working: '◉', waiting: '⏸', done: '✓', failed: '✕' }
+export const STATUS_GLYPHS: { [state in SessionState]: string } = { working: '◉', waiting: '⏸\uFE0E', done: '✓', failed: '✕' }

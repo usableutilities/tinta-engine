@@ -2989,7 +2989,7 @@ export const register: Register = on => {
       // experiment diffButton (a probe): "↗ diff" at the end of an Edit or Write row, asking the app's own MCP
       // server (ccd_view, show_pane) for its diff pane at that file; what it answers goes to the debug log
       if (typeof path === 'string' && path !== '' && /^(Edit|Write|MultiEdit)$/.test(e.props.tool) && !e.props.isRunning && !e.props.isErrored && 'Button' in els && tries(theme, 'diffButton')) {
-        extra.button = { key: `tinta-diff-${e.props.tool_use_id}`, label: '↗ diff', onPress: () => void openDiff($, path) }
+        extra.button = { key: `tinta-diff-${e.props.tool_use_id}`, label: '↗\uFE0E diff', onPress: () => void openDiff($, path) }
       }
       // experiment todos: TodoWrite as a checklist under its row, its progress as a ring beside the chip
       const list = e.props.tool === 'TodoWrite' && !e.props.isErrored && 'Svg' in els && tries(theme, 'todos') ? todosOf(e.props.input, e.props.output) : undefined
@@ -3411,7 +3411,7 @@ export const register: Register = on => {
             {health && <Svg source={health.source} alt={healthAlt} width={health.width} height={health.height} />}
             {clock && <Svg source={clock.source} alt={elapsed ?? '—'} width={clock.width} height={clock.height} />}
             {planned.total > 0 && (
-              <Text key="tinta-plan" {...(planned.done === planned.total && theme.palette.success ? { color: theme.palette.success } : { dimColor: true })}>{`☑ ${planned.done}/${planned.total}`}</Text>
+              <Text key="tinta-plan" {...(planned.done === planned.total && theme.palette.success ? { color: theme.palette.success } : { dimColor: true })}>{`☑\uFE0E ${planned.done}/${planned.total}`}</Text>
             )}
             <Box key="tinta-band-buttons" flexDirection="row" gap={1} alignItems="center">
               {busy > 0 && <Button key="tinta-attivita" label={`◷ ${busy}`} onPress={() => void openAttivita($)} />}
@@ -3495,7 +3495,7 @@ export const register: Register = on => {
           {elapsed && room >= BAND_ROOM.timer && <Text key="tinta-timer" dimColor wrap="truncate-end">{elapsed}</Text>}
           {/* experiment todos: the plan's progress */}
           {planned.total > 0 && (
-            <Text key="tinta-plan" {...(planned.done === planned.total && theme.palette.success ? { color: theme.palette.success } : { dimColor: true })}>{`☑ ${planned.done}/${planned.total}`}</Text>
+            <Text key="tinta-plan" {...(planned.done === planned.total && theme.palette.success ? { color: theme.palette.success } : { dimColor: true })}>{`☑\uFE0E ${planned.done}/${planned.total}`}</Text>
           )}
           {busy > 0 && <Button key="tinta-attivita" label={`◷ ${busy}`} onPress={() => void openAttivita($)} />}
           {hasSounds && (

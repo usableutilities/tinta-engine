@@ -573,7 +573,7 @@ async function drawFace($: EngineInterface, e: RenderInput<'Pane'>, compact: boo
     // (la voce in questa sessione sta nella fascia sopra il prompt)
     const bar = (
       <Box key="volto-bar" flexDirection="row" justifyContent="flex-end" width="100%">
-        <Button key="volto-voce" label={setting.on ? '🔊' : '🔇'} plain onPress={() => void paneVoice($, { ...setting, on: !setting.on })} />
+        <Button key="volto-voce" label={`∿ ${setting.on ? 'on' : 'off'}`} plain {...(setting.on ? {} : { dimColor: true })} onPress={() => void paneVoice($, { ...setting, on: !setting.on })} />
       </Box>
     )
 
@@ -916,7 +916,7 @@ export const registerVolto = (on: On) => {
             {/* a slot of one width for both words, the glyph at its start: Ascolta and Ferma swap with nothing moving */}
             <Box key="volto-ascolta-slot" flexDirection="row" alignItems="center" width={11}>
               {Svg && <Svg source={steadyFrame(icon.source)} alt={playing ? '■' : '▶'} width={LISTEN_ICON.size} height={LISTEN_ICON.size} isInteractive />}
-              <Button key={`volto-ascolta-${key}`} plain label={Svg ? (playing ? 'Ferma' : 'Ascolta') : playing ? '■ Ferma' : '▶ Ascolta'} onPress={() => void (playing ? stopListening($) : listen($, chunksOf(text), key))} />
+              <Button key={`volto-ascolta-${key}`} plain label={Svg ? (playing ? 'Ferma' : 'Ascolta') : playing ? '■ Ferma' : '▶\uFE0E Ascolta'} onPress={() => void (playing ? stopListening($) : listen($, chunksOf(text), key))} />
             </Box>
           </Box>
         )}
@@ -980,9 +980,10 @@ export const registerVolto = (on: On) => {
         <Box key="volto-below" flexGrow={1} flexShrink={1} minWidth={0}>
           {below}
         </Box>
-        {/* la voce solo in questa sessione, nello stile del ♪ di Tinta (suoni del tema): spenta, piu' tenue */}
-        <Button key="volto-sessione" label={`${sessionVoiceOn() ? '🔊' : '🔇'} ${t(await read($, locale), sessionVoiceOn() ? 'voiceOn' : 'voiceOff')}`} {...(sessionVoiceOn() ? {} : { dimColor: true })} onPress={() => void paneSessionVoice($)} />
-        <Button key="volto-toggle" label="☺ Volto" onPress={() => void toggle($)} />
+        {/* la voce solo in questa sessione, nello stile del ♪ di Tinta (suoni del tema): ∿ come segno, mai un'emoji;
+            spenta, piu' tenue. Dove un segno ha anche la forma emoji, U+FE0E chiede quella di testo (☺, ▶) */}
+        <Button key="volto-sessione" label={`∿ ${t(await read($, locale), sessionVoiceOn() ? 'voiceOn' : 'voiceOff')}`} {...(sessionVoiceOn() ? {} : { dimColor: true })} onPress={() => void paneSessionVoice($)} />
+        <Button key="volto-toggle" label={'☺\uFE0E Volto'} onPress={() => void toggle($)} />
       </Box>
     )
   }).catch(($, e, next) => next(e))

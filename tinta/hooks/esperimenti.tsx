@@ -201,7 +201,7 @@ export const writtenFile = (tool: string, input: unknown): string | undefined =>
 
 /** "⏱ 1m 12s · 14 strumenti · 3 file": the parts with nothing to say left out. */
 export const footerText = (ms: number, stats: TurnStats, words: { tools: (n: number) => string; files: (n: number) => string }): string =>
-  [`⏱ ${durationText(ms)}`, stats.tools > 0 ? words.tools(stats.tools) : undefined, stats.files.length > 0 ? words.files(stats.files.length) : undefined].filter(Boolean).join(' · ')
+  [`⏱︎ ${durationText(ms)}`, stats.tools > 0 ? words.tools(stats.tools) : undefined, stats.files.length > 0 ? words.files(stats.files.length) : undefined].filter(Boolean).join(' · ')
 
 // ── (g) a line under the permission dialog ──────────────────────────────────
 
@@ -229,7 +229,7 @@ const BASH_CHAINS = /[;&|>`]|\$\(/
 const SENSITIVE_PATH = /(^|[\\/])\.(env|ssh|aws|gnupg|netrc|npmrc|zshrc|bashrc|bash_profile|profile|zprofile)([\\/.]|$)|(^|[\\/])\.git[\\/]|^\/(etc|usr|System|Library)\/|[\\/]\.claude[\\/]settings/
 
 /** The level's mark: the same three in every theme, read before the words. */
-export const RISK_MARKS: { [level in RiskLevel]: string } = { high: '⚠', medium: '◆', low: '○' }
+export const RISK_MARKS: { [level in RiskLevel]: string } = { high: '⚠︎', medium: '◆', low: '○' }
 
 /** The longest a risk line runs: one line under the dialog. */
 const RISK_LINE_MAX = 110

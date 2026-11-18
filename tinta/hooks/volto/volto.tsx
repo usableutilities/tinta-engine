@@ -7,7 +7,7 @@ import { FACE_TEXT, FALLBACK, knownPalette, paletteOf, publishedPalette, themeId
 import type { Palette } from './face'
 import { PANE_ID } from './ids'
 import { colorSettings, colorize, setColorful } from './colorito'
-import { attivitaShown, dbg, findHelper, helperOf, hidden, isSpeaking, listen, onLevel, previewVoice, publishVoiceSetting, setLiveVoice, setNativeShown, setSynth, synthMode, replyBegin, sessionTag, setReadingMode, setToneCues, stopListening, replyEnd, sayLine, setPlace, shown, stopMine, voiceEnd, voiceStart, warmUp } from './parla'
+import { attivitaShown, dbg, findHelper, helperOf, hidden, isSpeaking, listen, onLevel, previewVoice, publishVoiceSetting, setLiveVoice, setNativeShown, setSynth, synthMode, replyBegin, sessionTag, setReadingMode, setToneCues, stopListening, replyEnd, sayLine, sessionVoiceOn, setPlace, setSessionVoice, shown, stopMine, voiceEnd, voiceStart, warmUp } from './parla'
 import { legacyVoltoIn, voltoOn, whyOff } from './attivo'
 import { drawsHere, isPro } from './pro'
 import { frameFor, heightFor } from './rig'
@@ -19,6 +19,7 @@ import type { Reading } from '../lettura'
 import { steadyFrame } from '../animazioni'
 import { readableOnBoth } from '../theme'
 import { sessionName } from './nome'
+import { t } from '../i18n'
 
 export const PANE = PANE_ID
 const TITLE = 'Volto'
@@ -71,6 +72,8 @@ const level = atom({ plugin: 'tinta', key: 'voltoLevel' } as const, 0, { shape: 
 const finals = atom({ plugin: 'tinta', key: 'voltoFinals' } as const, [] as string[], { shape: 'finals-1' })
 const ascolto = atom({ plugin: 'tinta', key: 'voltoAscolto' } as const, '', { shape: 'ascolto-1' })
 // la frase che la voce legge adesso (parla.ts): il pulsante di quella risposta dice Ferma
+// la lingua della fascia, la stessa che tiene register.tsx (per il pulsante della voce accanto a ☺ Volto)
+const locale = atom({ plugin: 'tinta', key: 'locale' } as const, 'en')
 const lettura = atom({ plugin: 'tinta', key: 'voltoLettura' } as const, { text: '', mode: READING_DEFAULT } as Reading, { shape: 'lettura-1' })
 
 const norm = (text: string) => withoutLine(text).replace(/\s+/g, ' ').trim()
@@ -108,6 +111,8 @@ async function writeStato($: EngineInterface) {
   const body = JSON.stringify({
     v: 2,
     session: sessionTag(),
+    // la voce in questa sessione (il pulsante sul suo volto): spenta finche' la persona non la accende qui
+    session_on: sessionVoiceOn(),
     // il nome leggibile della sessione (il titolo della barra laterale, o la cartella): la finestra del volto lo mostra
     ...(shownName ? { session_name: shownName } : {}),
     mood: (await read($, face)).mood,
@@ -418,6 +423,20 @@ async function paneVoice($: EngineInterface, next: VoiceSetting) {
   await setVoice($, next)
 }
 
+/**
+ * Il pulsante della voce nella fascia: accende o spegne la voce solo qui. Accesa qui con la voce generale
+ * spenta, accende anche quella (come il 🔊), altrimenti il pulsante non farebbe nulla.
+ */
+async function paneSessionVoice($: EngineInterface) {
+  const next = !sessionVoiceOn()
+  await setSessionVoice($, next)
+  const setting = await read($, voce)
+  if (next && !setting.on) await paneVoice($, { ...setting, on: true })
+  else await writeStato($)
+  if (next) await loadVoices($)
+  $.ui.invalidate('ui.render')
+}
+
 /** Sceglie il personaggio e lo ricorda tra le sessioni. */
 async function choose($: EngineInterface, id: Who) {
   await update($, who, () => id)
@@ -551,6 +570,7 @@ async function drawFace($: EngineInterface, e: RenderInput<'Pane'>, compact: boo
     const setting = await read($, voce)
     const bg = backdropOf(current, palette)
     // tutte le scelte del volto stanno nell'app Tinta: qui resta solo la voce si'/no, piccola
+    // (la voce in questa sessione sta nella fascia sopra il prompt)
     const bar = (
       <Box key="volto-bar" flexDirection="row" justifyContent="flex-end" width="100%">
         <Button key="volto-voce" label={setting.on ? '🔊' : '🔇'} plain onPress={() => void paneVoice($, { ...setting, on: !setting.on })} />
@@ -960,6 +980,8 @@ export const registerVolto = (on: On) => {
         <Box key="volto-below" flexGrow={1} flexShrink={1} minWidth={0}>
           {below}
         </Box>
+        {/* la voce solo in questa sessione, nello stile del ♪ di Tinta (suoni del tema): spenta, piu' tenue */}
+        <Button key="volto-sessione" label={`${sessionVoiceOn() ? '🔊' : '🔇'} ${t(await read($, locale), sessionVoiceOn() ? 'voiceOn' : 'voiceOff')}`} {...(sessionVoiceOn() ? {} : { dimColor: true })} onPress={() => void paneSessionVoice($)} />
         <Button key="volto-toggle" label="☺ Volto" onPress={() => void toggle($)} />
       </Box>
     )

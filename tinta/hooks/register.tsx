@@ -3501,7 +3501,7 @@ export const register: Register = on => {
           {hasSounds && (
             <Button
               key="tinta-sound"
-              label={silent ? `♪ ${t(lang, 'soundOff')}` : '♪'}
+              label={`♪ ${t(lang, silent ? 'soundOff' : 'soundOn')}`}
               {...(silent ? { dimColor: true } : {})}
               onPress={() => void toggleSounds($)}
             />

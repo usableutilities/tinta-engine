@@ -20,8 +20,11 @@ export const STRINGS = {
   themeAlt: { it: 'Tema {name}', en: 'Theme {name}', es: 'Tema {name}', fr: 'Thème {name}', de: 'Design {name}', pt: 'Tema {name}' },
   context: { it: 'contesto', en: 'context', es: 'contexto', fr: 'contexte', de: 'Kontext', pt: 'contexto' },
   reset: { it: 'reset', en: 'resets', es: 'reinicio', fr: 'réinit.', de: 'Reset', pt: 'reinício' },
-  soundOff: { it: 'off', en: 'off', es: 'off', fr: 'off', de: 'aus', pt: 'off' },
-  soundOn: { it: 'on', en: 'on', es: 'on', fr: 'on', de: 'an', pt: 'on' },
+  // the band's two toggles name what they turn on or off: the theme's sounds (♪) and this session's voice (🔊/🔇)
+  soundOff: { it: 'Suoni: off', en: 'Sounds: off', es: 'Sonidos: off', fr: 'Sons : off', de: 'Töne: aus', pt: 'Sons: off' },
+  voiceOff: { it: 'Voce: off', en: 'Voice: off', es: 'Voz: off', fr: 'Voix : off', de: 'Stimme: aus', pt: 'Voz: off' },
+  voiceOn: { it: 'Voce: on', en: 'Voice: on', es: 'Voz: on', fr: 'Voix : on', de: 'Stimme: an', pt: 'Voz: on' },
+  soundOn: { it: 'Suoni: on', en: 'Sounds: on', es: 'Sonidos: on', fr: 'Sons : on', de: 'Töne: an', pt: 'Sons: on' },
   // limits and alerts
   limit5h: { it: '5h', en: '5h', es: '5h', fr: '5h', de: '5h', pt: '5h' },
   limit7d: { it: '7g', en: '7d', es: '7d', fr: '7j', de: '7T', pt: '7d' },

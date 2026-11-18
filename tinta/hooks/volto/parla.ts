@@ -156,6 +156,7 @@ export const resetSpeech = () => {
   watch = undefined
   beat = undefined
   visible = true
+  sessionOn = false
 }
 
 /** All'inizio della sessione: la cartella comune e il battito di questa sessione. */
@@ -220,6 +221,18 @@ export const setNativeShown = (on: boolean) => {
 }
 const isVisible = () => nativeShown || (place === 'attivita' ? attivitaOpen : visible)
 
+// la voce in questa sessione: spenta all'avvio, la accende la persona dal pannello del volto di questa sessione.
+// Solo qui, in memoria: non si ricorda e i comandi dell'app non la toccano (la voce generale resta l'interruttore di tutto)
+let sessionOn = false
+export const sessionVoiceOn = () => sessionOn
+/** Accende o spegne la voce solo in questa sessione; spenta, quello che stava dicendo si ferma. */
+export async function setSessionVoice($: EngineInterface, on: boolean) {
+  if (on === sessionOn) return
+  sessionOn = on
+  dbg($, `voce in questa sessione: ${on ? 'accesa' : 'spenta'}`)
+  if (!on) await stopMine($)
+}
+
 // --- registro per capire cosa succede: ~/.claude/tinta/voce/debug.log, ultime 300 righe ---
 
 let logPath: string | undefined
@@ -243,7 +256,7 @@ export function dbg($: EngineInterface, text: string) {
 /** Scalda l'aiuto comune (modello caricato e prima sintesi fatta) prima che serva. */
 export async function warmUp($: EngineInterface) {
   const setting = await voiceSetting($)
-  if (setting.on && synth === 'helper' && engineOf(setting.engine, await read($, kokoro)) === 'kokoro' && (await read($, kokoro))) await ensureHelper($)
+  if (setting.on && sessionOn && synth === 'helper' && engineOf(setting.engine, await read($, kokoro)) === 'kokoro' && (await read($, kokoro))) await ensureHelper($)
 }
 
 /** Una nuova richiesta: zitto, e si prepara la prossima risposta (l'aiuto si scalda mentre il modello pensa). */
@@ -265,7 +278,7 @@ async function beginNow($: EngineInterface) {
   replyOpen = true
   replyLang = undefined
   const setting = await voiceSetting($)
-  if (setting.on && synth === 'helper' && engineOf(setting.engine, await read($, kokoro)) === 'kokoro' && isVisible()) await ensureHelper($)
+  if (setting.on && sessionOn && synth === 'helper' && engineOf(setting.engine, await read($, kokoro)) === 'kokoro' && isVisible()) await ensureHelper($)
 }
 
 /** La risposta e' finita: se non c'e' piu' niente da dire, il volto sorride e torna a riposo. */
@@ -322,9 +335,9 @@ async function sayNow($: EngineInterface, line: string, force = false, source?: 
   const setting = await voiceSetting($)
   const hasKokoro = await read($, kokoro)
   const engine = engineOf(setting.engine, hasKokoro)
-  dbg($, `frase: voce=${setting.on ? 'si' : 'no'} dove=${nativeShown ? "finestra dell'app" : place} visibile=${isVisible() ? 'si' : 'no'} motore=${engine} sintesi=${synth} kokoro=${hasKokoro ? 'c\'e\'' : 'manca'}${kokoroBroken ? ` (rotto: ${kokoroBroken})` : ''} cartella=${dir ? 'si' : 'no'} «${line.slice(0, 60)}»`)
-  if (!force && (!setting.on || !isVisible())) {
-    dbg($, `frase saltata: ${!setting.on ? 'voce spenta' : `volto non visibile (dove=${place}, pannello ${place === 'attivita' ? (attivitaOpen ? 'aperto' : 'chiuso') : visible ? 'aperto' : 'chiuso'})`}`)
+  dbg($, `frase: voce=${setting.on ? 'si' : 'no'} sessione=${sessionOn ? 'si' : 'no'} dove=${nativeShown ? "finestra dell'app" : place} visibile=${isVisible() ? 'si' : 'no'} motore=${engine} sintesi=${synth} kokoro=${hasKokoro ? 'c\'e\'' : 'manca'}${kokoroBroken ? ` (rotto: ${kokoroBroken})` : ''} cartella=${dir ? 'si' : 'no'} «${line.slice(0, 60)}»`)
+  if (!force && (!setting.on || !sessionOn || !isVisible())) {
+    dbg($, `frase saltata: ${!setting.on ? 'voce spenta' : !sessionOn ? 'voce spenta in questa sessione' : `volto non visibile (dove=${place}, pannello ${place === 'attivita' ? (attivitaOpen ? 'aperto' : 'chiuso') : visible ? 'aperto' : 'chiuso'})`}`)
 
     return
   }
